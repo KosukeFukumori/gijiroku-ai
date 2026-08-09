@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# データ・ローカル設定（機密情報を含むため追跡しない）
+data/
+.env
+
+# GCP サービスアカウント鍵（機密情報のため追跡しない）
+gcp/*.json
+
+# macOS
+.DS_Store
+

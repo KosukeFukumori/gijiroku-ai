@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.py[oc]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# データ・ローカル設定
+data/
+.env
+
+# Git
+.git/
+.gitignore
+
+# ドキュメント（ビルドに不要）
+*.md
+
+# macOS
+.DS_Store
+
+# GCP サービスアカウント鍵
+gcp/

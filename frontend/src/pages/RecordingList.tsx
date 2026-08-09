@@ -1,0 +1,144 @@
+// 録音一覧ページ（アップロード領域を兼ねる）
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { fetchRecordings, subscribeEvents, uploadRecording } from '../api'
+import type { RecordingListItem } from '../types'
+import { ProcessBadge } from '../components/Badge'
+import { Toast } from '../components/Toast'
+import { UploadDropzone } from '../components/UploadDropzone'
+
+/** 秒数を mm:ss 形式に変換（duration_sec は float なので整数へ丸める） */
+function formatDuration(sec: number | null): string {
+  if (sec == null) return '-'
+  const total = Math.round(sec)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+/** 会議日時を読みやすい文字列に変換 */
+function formatDatetime(dt: string): string {
+  return new Date(dt).toLocaleString('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+interface ToastState {
+  message: string
+  type: 'info' | 'error' | 'success'
+}
+
+export function RecordingList() {
+  const navigate = useNavigate()
+
+  const [items, setItems] = useState<RecordingListItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [toast, setToast] = useState<ToastState | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetchRecordings({ page_size: 100 })
+      setItems(res.items)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '一覧の取得に失敗しました'
+      setToast({ message: msg, type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  // SSE でリアルタイム更新（連続イベントをまとめて再読込）
+  const loadRef = useRef(load)
+  loadRef.current = load
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = subscribeEvents((event) => {
+      if (event.type === 'recordings_changed' || event.type === 'recording_updated') {
+        if (debounceRef.current) clearTimeout(debounceRef.current)
+        debounceRef.current = setTimeout(() => { void loadRef.current() }, 400)
+      }
+    })
+    return () => {
+      unsubscribe()
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
+  const handleUpload = async (file: File, title: string) => {
+    try {
+      const detail = await uploadRecording(file, title)
+      setToast({ message: 'アップロードしました。処理を開始します', type: 'success' })
+      void load()
+      navigate(`/recordings/${detail.id}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'アップロードに失敗しました'
+      setToast({ message: msg, type: 'error' })
+    }
+  }
+
+  return (
+    <div>
+      {toast && (
+        <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
+      )}
+
+      <div className="page-header">
+        <h1 className="page-title">録音一覧</h1>
+      </div>
+
+      <UploadDropzone onUpload={handleUpload} />
+
+      {loading && items.length === 0 && (
+        <div className="loading-state">
+          <span className="loading-spinner" aria-hidden />
+          読み込み中...
+        </div>
+      )}
+
+      <div className="recording-list">
+        {items.length === 0 && !loading && (
+          <div className="empty-state">
+            <div className="empty-state-icon" aria-hidden>🎙️</div>
+            <p className="empty-state-title">録音がありません</p>
+            <p className="empty-state-desc">上の領域から会議の録音ファイルをアップロードしてください</p>
+          </div>
+        )}
+        {items.map((item) => (
+          <div
+            key={item.id}
+            className={`recording-card recording-card--${item.process_status}`}
+            onClick={() => navigate(`/recordings/${item.id}`)}
+          >
+            <div className="recording-card-header">
+              <span className="recording-title">{item.title ?? '(タイトル未生成)'}</span>
+              <ProcessBadge status={item.process_status} />
+            </div>
+            <div className="recording-card-meta">
+              <span>
+                <span className="recording-meta-label">日時</span>
+                {formatDatetime(item.meeting_datetime)}
+              </span>
+              <span>
+                <span className="recording-meta-label">時間</span>
+                {formatDuration(item.duration_sec)}
+              </span>
+            </div>
+            {item.summary_head && (
+              <p className="recording-summary-head">{item.summary_head}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
