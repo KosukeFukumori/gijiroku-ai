@@ -20,8 +20,9 @@ def get_conn() -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     # WAL は Docker Desktop for Mac のバインドマウント（gRPC-FUSE/VirtioFS）上では
     # 共有メモリファイル（-shm）や mmap ロックが不完全にしかサポートされず、
-    # 断続的に "disk I/O error" が発生することがあるため使用しない
-    conn.execute("PRAGMA journal_mode = DELETE")
+    # 断続的に "disk I/O error" が発生することがあるため、DB ファイルは
+    # config.db_dir（Docker named volume）に置くこと（docker-compose.yml 参照）
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
