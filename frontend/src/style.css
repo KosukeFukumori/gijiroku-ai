@@ -496,6 +496,59 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
 
 .summary-text { white-space: pre-wrap; color: var(--ink); }
 
+.summary-markdown {
+  color: var(--ink);
+  line-height: 1.75;
+}
+.summary-markdown h1,
+.summary-markdown h2,
+.summary-markdown h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: var(--space-5) 0 var(--space-2);
+}
+.summary-markdown h1:first-child,
+.summary-markdown h2:first-child,
+.summary-markdown h3:first-child {
+  margin-top: 0;
+}
+.summary-markdown h1 { font-size: 1.15rem; }
+.summary-markdown h2 { font-size: 1.05rem; }
+.summary-markdown h3 { font-size: .95rem; }
+.summary-markdown p { margin: var(--space-2) 0; }
+.summary-markdown ul,
+.summary-markdown ol {
+  margin: var(--space-2) 0;
+  padding-left: 1.4em;
+}
+.summary-markdown li { margin: var(--space-1) 0; }
+.summary-markdown strong { color: var(--ink); font-weight: 600; }
+.summary-markdown code {
+  font-family: var(--font-mono);
+  font-size: .9em;
+  background-color: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.summary-markdown blockquote {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--rule-strong);
+  color: var(--mist);
+}
+.summary-markdown table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0;
+  font-size: 13.5px;
+}
+.summary-markdown th,
+.summary-markdown td {
+  border: 1px solid var(--rule);
+  padding: var(--space-1) var(--space-2);
+}
+.summary-markdown th { background-color: var(--surface); }
+
 .streaming-cursor {
   display: inline-block;
   animation: pulse 1s ease-in-out infinite;

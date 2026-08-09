@@ -1,6 +1,8 @@
 // 録音詳細ページ: 「文字起こし」「議事録」タブを切り替える
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { audioUrl, deleteRecording, fetchRecording, retryRecording, subscribeEvents } from '../api'
 import type { RecordingDetail as RecordingDetailType, Segment } from '../types'
 import { ProcessBadge } from '../components/Badge'
@@ -235,14 +237,16 @@ export function RecordingDetail() {
         <div>
           {showSummary && (
             <div className="section">
-              <h2 className="section-title">要約</h2>
+              <h2 className="section-title">議事録</h2>
               {isProcessing ? (
                 <p className="summary-text">
                   {summaryProgress ?? ''}
                   <span className="streaming-cursor" aria-hidden>▍</span>
                 </p>
               ) : (
-                <p className="summary-text">{detail.summary}</p>
+                <div className="summary-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.summary}</ReactMarkdown>
+                </div>
               )}
             </div>
           )}
