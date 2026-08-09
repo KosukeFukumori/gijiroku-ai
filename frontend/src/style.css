@@ -129,6 +129,73 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
   color: var(--ink);
 }
 
+.nav-settings-link {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.nav-settings-link:hover {
+  background-color: var(--rule);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.settings-field label {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--space-2);
+}
+
+.settings-field-hint {
+  color: var(--mist);
+  font-size: 12.5px;
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.settings-input,
+.settings-textarea {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background-color: var(--surface);
+}
+
+.settings-textarea {
+  min-height: 320px;
+  resize: vertical;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.settings-field-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
 .main-content {
   flex: 1;
   max-width: 920px;

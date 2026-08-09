@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from gijiroku_ai import worker
 from gijiroku_ai.config import get_config
 from gijiroku_ai.db import init_db
-from gijiroku_ai.routes import events, recordings
+from gijiroku_ai.routes import events, recordings, settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +35,7 @@ app = FastAPI(title="議事録AI", lifespan=lifespan)
 
 app.include_router(recordings.router)
 app.include_router(events.router)
+app.include_router(settings.router)
 
 _static = get_config().static_dir
 

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -15,6 +16,7 @@ from gijiroku_ai.models import (
     RecordingListItem,
     Segment,
 )
+from gijiroku_ai.timeutil import now_iso, to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ def _row_to_item(row) -> RecordingListItem:
 async def upload_recording(
     file: UploadFile = File(...),
     title: str | None = Form(None),
+    file_modified_at: str | None = Form(None),
 ) -> RecordingDetail:
     ext = Path(file.filename or "").suffix.lstrip(".").lower()
     if ext not in storage.ALLOWED_EXTENSIONS:
@@ -48,13 +51,30 @@ async def upload_recording(
     public_id = new_public_id()
     stored_filename, size = storage.save_upload(public_id, file.filename or "recording", file.file)
 
+    meeting_datetime = now_iso()
+    if file_modified_at:
+        try:
+            meeting_datetime = to_iso(datetime.fromisoformat(file_modified_at))
+        except ValueError:
+            pass
+
+    now = now_iso()
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO recordings "
             "(public_id, original_filename, stored_filename, size, title, "
-            "meeting_datetime, process_status) "
-            "VALUES (?, ?, ?, ?, ?, datetime('now'), 'pending')",
-            (public_id, file.filename or stored_filename, stored_filename, size, title),
+            "meeting_datetime, created_at, updated_at, process_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+            (
+                public_id,
+                file.filename or stored_filename,
+                stored_filename,
+                size,
+                title,
+                meeting_datetime,
+                now,
+                now,
+            ),
         )
     events.publish({"type": "recordings_changed"})
     return get_recording(public_id)
@@ -178,8 +198,8 @@ def retry_recording(public_id: str) -> dict:
     with get_conn() as conn:
         conn.execute(
             "UPDATE recordings SET process_status = 'pending', retry_count = 0, "
-            "error_message = NULL, updated_at = datetime('now') WHERE id = ?",
-            (row["id"],),
+            "error_message = NULL, updated_at = ? WHERE id = ?",
+            (now_iso(), row["id"]),
         )
     worker.clear_defer(row["id"])
     events.publish(

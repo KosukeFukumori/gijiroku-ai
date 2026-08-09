@@ -1,8 +1,8 @@
-// 録音ファイルのドラッグ&ドロップ / ファイル選択アップロード領域
+// 録音ファイルのドラッグ&ドロップ / ファイル選択アップロード領域（複数ファイル対応）
 import { useRef, useState } from 'react'
 
 interface Props {
-  onUpload: (file: File, title: string) => Promise<void>
+  onUpload: (files: File[]) => Promise<void>
   disabled?: boolean
 }
 
@@ -11,10 +11,11 @@ export function UploadDropzone({ onUpload, disabled = false }: Props) {
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
 
-  const handleFile = async (file: File) => {
+  const handleFiles = async (files: File[]) => {
+    if (files.length === 0) return
     setUploading(true)
     try {
-      await onUpload(file, '')
+      await onUpload(files)
     } finally {
       setUploading(false)
     }
@@ -24,14 +25,13 @@ export function UploadDropzone({ onUpload, disabled = false }: Props) {
     e.preventDefault()
     setDragging(false)
     if (disabled || uploading) return
-    const file = e.dataTransfer.files[0]
-    if (file) void handleFile(file)
+    void handleFiles(Array.from(e.dataTransfer.files))
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+    const files = Array.from(e.target.files ?? [])
     e.target.value = ''
-    if (file) void handleFile(file)
+    void handleFiles(files)
   }
 
   const busy = disabled || uploading
@@ -51,6 +51,7 @@ export function UploadDropzone({ onUpload, disabled = false }: Props) {
         ref={inputRef}
         type="file"
         accept=".m4a,.mp3,.wav,.aac,.amr,.ogg,.flac"
+        multiple
         className="dropzone-input"
         onChange={handleInputChange}
         disabled={busy}
@@ -60,7 +61,9 @@ export function UploadDropzone({ onUpload, disabled = false }: Props) {
         {uploading ? 'アップロード中...' : '録音ファイルをドラッグ&ドロップ'}
       </p>
       {!uploading && (
-        <p className="dropzone-desc">またはクリックしてファイルを選択（m4a, mp3, wav, aac, amr, ogg, flac）</p>
+        <p className="dropzone-desc">
+          またはクリックしてファイルを選択（複数選択可、m4a, mp3, wav, aac, amr, ogg, flac）
+        </p>
       )}
     </div>
   )

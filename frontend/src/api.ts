@@ -2,7 +2,7 @@
 // バックエンド API クライアント
 // ============================================================
 
-import type { AppEvent, RecordingDetail, RecordingList } from './types'
+import type { AppEvent, RecordingDetail, RecordingList, Settings, SettingsUpdate } from './types'
 
 const BASE = '/api'
 
@@ -53,10 +53,10 @@ export function audioUrl(id: string): string {
 // 録音アップロード・操作
 // ============================================================
 
-export async function uploadRecording(file: File, title: string): Promise<RecordingDetail> {
+export async function uploadRecording(file: File): Promise<RecordingDetail> {
   const form = new FormData()
   form.append('file', file)
-  if (title.trim()) form.append('title', title.trim())
+  form.append('file_modified_at', new Date(file.lastModified).toISOString())
   const res = await fetch(`${BASE}/recordings`, { method: 'POST', body: form })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -71,6 +71,22 @@ export function deleteRecording(id: string): Promise<unknown> {
 
 export function retryRecording(id: string): Promise<unknown> {
   return apiFetch(`/recordings/${id}/retry`, { method: 'POST' })
+}
+
+// ============================================================
+// 設定（モデル名・プロンプト）
+// ============================================================
+
+export function fetchSettings(): Promise<Settings> {
+  return apiFetch<Settings>('/settings')
+}
+
+export function updateSettings(patch: SettingsUpdate): Promise<Settings> {
+  return apiFetch<Settings>('/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
 }
 
 // ============================================================

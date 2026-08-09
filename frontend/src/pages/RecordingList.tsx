@@ -74,15 +74,25 @@ export function RecordingList() {
     }
   }, [])
 
-  const handleUpload = async (file: File, title: string) => {
-    try {
-      const detail = await uploadRecording(file, title)
-      setToast({ message: 'アップロードしました。処理を開始します', type: 'success' })
-      void load()
-      navigate(`/recordings/${detail.id}`)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'アップロードに失敗しました'
-      setToast({ message: msg, type: 'error' })
+  const handleUpload = async (files: File[]) => {
+    let success = 0
+    let lastError = ''
+    for (const file of files) {
+      try {
+        await uploadRecording(file)
+        success++
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : 'アップロードに失敗しました'
+      }
+    }
+    void load()
+    const failed = files.length - success
+    if (failed === 0) {
+      setToast({ message: `${success}件アップロードしました。処理を開始します`, type: 'success' })
+    } else if (success === 0) {
+      setToast({ message: lastError || 'アップロードに失敗しました', type: 'error' })
+    } else {
+      setToast({ message: `${success}件成功、${failed}件失敗しました`, type: 'error' })
     }
   }
 

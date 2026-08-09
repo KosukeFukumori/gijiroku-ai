@@ -24,45 +24,13 @@ from google import genai
 from google.cloud import storage
 from google.genai import types
 
+from gijiroku_ai import settings
 from gijiroku_ai.config import get_config
 
 logger = logging.getLogger(__name__)
 
 # 出力上限。長時間の会議でも segments + summary が途中で切れないよう大きめに確保する
 MAX_OUTPUT_TOKENS = 65536
-
-_PROMPT = """\
-あなたは会議の録音を文字起こしし、議事録を作成するアシスタントです。
-与えられた音声ファイルを聞き取り、以下の JSON 形式で1つのオブジェクトのみを出力してください。
-コードフェンスや説明文は不要です。JSON 以外の文字を出力しないでください。
-
-{
-  "title": "会議内容を表す短い見出し（30文字程度）",
-  "summary": "会議全体の要約。日時・議題・結論などの重要情報を優先して数行で記述する",
-  "decisions": ["会議で決定した事項の箇条書き（無ければ空配列）"],
-  "action_items": ["宿題・タスクなどのアクションアイテムの箇条書き（無ければ空配列）"],
-  "segments": [
-    {
-      "start_sec": 0.0,
-      "end_sec": 3.2,
-      "speaker": "話者ラベル",
-      "text": "発話内容"
-    }
-  ]
-}
-
-話者ラベルについて:
-- 発言中の呼びかけ・自己紹介・敬称などから発話者の個人名を特定できる場合は、
-  その名前をラベルにしてください（例: "田中"）
-- 個人名を特定できない場合は、出現順に「話者A」「話者B」「話者C」…という
-  匿名ラベルを割り当ててください
-- 同一人物には常に同じラベルを使い、推測に自信が無い場合でも断定的に
-  書いてよいですが、事実と異なる可能性がある推測だと分かるように
-  無理に個人名を割り当てず、その場合は匿名ラベルにしてください
-
-segments は発話順に並べ、実際に発話があった区間のみを含めてください
-（無音区間は含めない）。
-"""
 
 
 _client: genai.Client | None = None
@@ -158,10 +126,10 @@ def process_recording(
 
     try:
         stream = genai_client().models.generate_content_stream(
-            model=get_config().gemini_model,
+            model=settings.effective_gemini_model(),
             contents=[
                 types.Part.from_uri(file_uri=gcs_uri, mime_type="audio/mp3"),
-                _PROMPT,
+                settings.effective_prompt(),
             ],
             config=types.GenerateContentConfig(
                 max_output_tokens=MAX_OUTPUT_TOKENS,

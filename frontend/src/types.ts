@@ -48,6 +48,22 @@ export interface RecordingList {
   total: number
 }
 
+/** 設定（Gemini モデル名・プロンプト） */
+export interface Settings {
+  gemini_model: string
+  prompt: string
+  gemini_model_is_default: boolean
+  prompt_is_default: boolean
+  gemini_model_default: string
+  prompt_default: string
+}
+
+/** PUT /api/settings のリクエストボディ。空文字はデフォルトに戻すことを表す */
+export interface SettingsUpdate {
+  gemini_model?: string
+  prompt?: string
+}
+
 /** GET /api/events の SSE イベント型 */
 export type AppEvent =
   | { type: 'recordings_changed' }

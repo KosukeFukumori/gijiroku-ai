@@ -23,6 +23,7 @@ from contextlib import contextmanager
 
 from gijiroku_ai import events, gemini, storage
 from gijiroku_ai.db import get_conn
+from gijiroku_ai.timeutil import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,8 @@ def _set_status(
     with get_conn() as conn:
         conn.execute(
             "UPDATE recordings SET process_status = ?, error_message = ?, "
-            "updated_at = datetime('now') WHERE id = ?",
-            (status, error, recording_id),
+            "updated_at = ? WHERE id = ?",
+            (status, error, now_iso(), recording_id),
         )
     events.publish(
         {"type": "recording_updated", "recording_id": public_id, "process_status": status}
@@ -163,8 +164,8 @@ def _fail(recording_id: int, public_id: str, exc: Exception) -> None:
             status = "pending" if retry <= MAX_RETRY else "error"
             conn.execute(
                 "UPDATE recordings SET retry_count = ?, process_status = ?, "
-                "error_message = ?, updated_at = datetime('now') WHERE id = ?",
-                (retry, status, str(exc), recording_id),
+                "error_message = ?, updated_at = ? WHERE id = ?",
+                (retry, status, str(exc), now_iso(), recording_id),
             )
     if status != "error":
         delay = _RETRY_BACKOFF_SEC[min(retry, len(_RETRY_BACKOFF_SEC)) - 1]

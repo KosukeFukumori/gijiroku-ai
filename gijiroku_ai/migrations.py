@@ -65,9 +65,26 @@ def _m1_baseline(conn: sqlite3.Connection) -> None:
     conn.executescript(_BASELINE_SCHEMA)
 
 
+def _m2_fix_datetime_format(conn: sqlite3.Connection) -> None:
+    """旧形式（SQLite `datetime('now')` 由来、例 `2026-08-09 08:46:15`）の
+    日時文字列を ISO8601 UTC（例 `2026-08-09T08:46:15Z`）へ変換する。
+
+    フロントエンドの `new Date()` が旧形式をローカル時刻と誤解釈し、表示が
+    9時間ずれる不具合の修正に伴うデータ移行（gijiroku_ai/timeutil.py 参照）。
+    """
+    conn.execute(
+        "UPDATE recordings SET "
+        "meeting_datetime = replace(meeting_datetime, ' ', 'T') || 'Z', "
+        "created_at = replace(created_at, ' ', 'T') || 'Z', "
+        "updated_at = replace(updated_at, ' ', 'T') || 'Z' "
+        "WHERE meeting_datetime NOT LIKE '%Z'"
+    )
+
+
 # (バージョン, 説明, 適用関数) をバージョン昇順で並べる
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (1, "ベースラインスキーマ", _m1_baseline),
+    (2, "日時フォーマットをISO8601 UTCに統一", _m2_fix_datetime_format),
 ]
 
 
