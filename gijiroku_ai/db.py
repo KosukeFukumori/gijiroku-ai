@@ -18,7 +18,10 @@ def get_conn() -> Iterator[sqlite3.Connection]:
     """短命の SQLite 接続を返す。commit/close は自動で行う。"""
     conn = sqlite3.connect(get_config().db_path, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
+    # WAL は Docker Desktop for Mac のバインドマウント（gRPC-FUSE/VirtioFS）上では
+    # 共有メモリファイル（-shm）や mmap ロックが不完全にしかサポートされず、
+    # 断続的に "disk I/O error" が発生することがあるため使用しない
+    conn.execute("PRAGMA journal_mode = DELETE")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
