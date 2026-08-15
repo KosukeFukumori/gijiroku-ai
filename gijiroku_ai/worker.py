@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from gijiroku_ai import events, gemini, storage
+from gijiroku_ai import events, gemini, storage, transcribe
 from gijiroku_ai.db import get_conn
 from gijiroku_ai.timeutil import now_iso
 
@@ -180,8 +180,52 @@ def _fail(recording_id: int, public_id: str, exc: Exception) -> None:
 
 
 def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> None:
-    """Gemini で文字起こし・話者識別・議事録生成・保存までをまとめて行う。"""
+    """2段階で処理する。
+
+    1. ローカル（mlx-whisper + pyannote）で文字起こし・話者識別 → segments 保存
+    2. 話者ラベル付きトランスクリプトを Gemini に渡して議事録生成 → 保存
+    """
     local_path = storage.path_for(stored_filename)
+
+    # Stage 1: ローカル文字起こし＋話者識別
+    _raise_if_cancelled(recording_id)
+    segments = transcribe.transcribe(local_path)
+    _raise_if_cancelled(recording_id)
+
+    duration = segments[-1].end_sec if segments else 0.0
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM transcript_segments WHERE recording_id = ?", (recording_id,)
+        )
+        conn.execute(
+            "UPDATE recordings SET duration_sec = ? WHERE id = ?",
+            (duration, recording_id),
+        )
+    for seg in segments:
+        _raise_if_cancelled(recording_id)
+        with get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO transcript_segments "
+                "(recording_id, start_sec, end_sec, text, speaker) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (recording_id, seg.start_sec, seg.end_sec, seg.text, seg.speaker),
+            )
+            seg_id = cur.lastrowid
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": seg.start_sec,
+                    "end_sec": seg.end_sec,
+                    "speaker": seg.speaker,
+                    "text": seg.text,
+                },
+            }
+        )
+
+    # Stage 2: Gemini でトランスクリプトから議事録生成
     last_publish = 0.0
 
     def on_partial(text: str) -> None:
@@ -195,41 +239,8 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             {"type": "summary_progress", "recording_id": public_id, "text": text}
         )
 
-    result = gemini.process_recording(local_path, on_partial=on_partial)
-
-    _raise_if_cancelled(recording_id)
-    with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM transcript_segments WHERE recording_id = ?", (recording_id,)
-        )
-        conn.execute(
-            "UPDATE recordings SET duration_sec = ? WHERE id = ?",
-            (result.duration_sec, recording_id),
-        )
-    for seg in result.segments:
-        _raise_if_cancelled(recording_id)
-        with get_conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO transcript_segments "
-                "(recording_id, start_sec, end_sec, text, speaker) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (recording_id, seg["start_sec"], seg["end_sec"], seg["text"],
-                 seg["speaker"]),
-            )
-            seg_id = cur.lastrowid
-        events.publish(
-            {
-                "type": "segment_added",
-                "recording_id": public_id,
-                "segment": {
-                    "id": seg_id,
-                    "start_sec": seg["start_sec"],
-                    "end_sec": seg["end_sec"],
-                    "speaker": seg["speaker"],
-                    "text": seg["text"],
-                },
-            }
-        )
+    transcript_text = transcribe.to_transcript_text(segments)
+    result = gemini.generate_minutes(transcript_text, on_partial=on_partial)
 
     with _active_lock:
         if recording_id in _cancelled:
@@ -246,6 +257,15 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
                     recording_id,
                 ),
             )
+            # Gemini が匿名ラベル→実名を特定できた場合、文字起こしの話者ラベルを
+            # 実名へ振り替える。フロントは done イベントで詳細を再取得するため、
+            # ここで DB を更新しておけば追加のイベントなしに表示へ反映される。
+            for anon_label, real_name in result.speaker_map.items():
+                conn.execute(
+                    "UPDATE transcript_segments SET speaker = ? "
+                    "WHERE recording_id = ? AND speaker = ?",
+                    (real_name, recording_id, anon_label),
+                )
 
 
 def process_job(recording_id: int, public_id: str, stored_filename: str) -> None:
