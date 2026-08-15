@@ -93,6 +93,8 @@ http://localhost:8000
 
 ## 環境変数一覧
 
+<!-- markdownlint-disable MD013 -->
+
 | 変数名 | 説明 | 既定値 |
 | --- | --- | --- |
 | `WHISPER_MODEL` | ローカル文字起こしの mlx-whisper モデル | `mlx-community/whisper-large-v3-mlx` |
@@ -102,8 +104,11 @@ http://localhost:8000
 | `GCP_LOCATION` | Vertex AI のリージョン | `global` |
 | `GEMINI_MODEL` | 議事録生成に使う Gemini モデル | `gemini-2.5-flash` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | サービスアカウント鍵 JSON のパス | `./gcp/service-account.json` |
+| `STATIC_DIR` | フロントエンドのビルド成果物ディレクトリ | `frontend/dist` |
 | `PORT` | 公開ポート | `8000` |
 | `TZ` | タイムゾーン | `Asia/Tokyo` |
+
+<!-- markdownlint-enable MD013 -->
 
 ## 開発時の起動方法
 

@@ -41,8 +41,9 @@ class Config(BaseSettings):
     # データ永続化ディレクトリ（録音ファイル・一時ファイル置き場）
     data_dir: Path = Path("data")
 
-    # フロントエンドのビルド成果物ディレクトリ
-    static_dir: Path = Path("static")
+    # フロントエンドのビルド成果物ディレクトリ。ホスト実行では
+    # `npm run build` の出力先（frontend/dist）をそのまま配信する
+    static_dir: Path = Path("frontend/dist")
 
     @property
     def db_path(self) -> Path:
