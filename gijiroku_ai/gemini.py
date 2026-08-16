@@ -27,6 +27,39 @@ logger = logging.getLogger(__name__)
 # 出力上限。長時間の会議でも summary が途中で切れないよう大きめに確保する
 MAX_OUTPUT_TOKENS = 65536
 
+# 話者名解決は speaker_map のみを返す小さな出力なので、議事録より小さくてよい
+_SPEAKER_NAME_MAX_OUTPUT_TOKENS = 8192
+
+SPEAKER_NAME_PROMPT = """\
+あなたは会議のトランスクリプト（文字起こし）から、匿名の話者ラベルが実際には
+誰なのかを特定するアシスタントです。
+与えられたトランスクリプトを読み、以下の JSON 形式で1つのオブジェクトのみを
+出力してください。コードフェンスや説明文は不要です。JSON 以外の文字を
+出力しないでください。
+
+{
+  "speaker_map": {"話者A": "実名または役割", "話者B": "実名または役割"}
+}
+
+トランスクリプトの形式について:
+- 各行は `[mm:ss] 話者A: 発話内容` の形式です（先頭は発話開始時刻）。
+- 話者は「話者A」「話者B」…の匿名ラベル、または話者識別ができなかった場合は
+  ラベルが省略されています。
+
+話者マップ（speaker_map）について:
+- トランスクリプト中の匿名ラベル（話者A/話者B…）が実際には誰なのかを、
+  会話の内容から特定できた場合にのみ、そのラベルをキー、特定した名前
+  （個人名。分からなければ「司会」「営業担当」等の役割でも可）を値とする
+  対応表を返してください。
+- 特定の根拠（自己紹介・名指しの呼びかけ・敬称・所属など）が明確なラベルだけを
+  含めること。推測に自信が無いラベルは speaker_map に含めないでください
+  （その話者は匿名ラベルのまま残します）。
+- 特定できるラベルが1つも無い場合は空オブジェクト {} を返してください。
+- ローカルの音声認識による自動文字起こしのため、固有名詞・数値・専門用語などに
+  誤認識が含まれることがあります。文脈から明らかな誤りは適宜補正して解釈して
+  構いませんが、事実を創作しないでください。
+"""
+
 
 _client: genai.Client | None = None
 
@@ -59,15 +92,11 @@ class MinutesResult:
         summary: str,
         decisions: list[str],
         action_items: list[str],
-        speaker_map: dict[str, str],
     ) -> None:
         self.title = title
         self.summary = summary
         self.decisions = decisions
         self.action_items = action_items
-        # 匿名ラベル（話者A 等）→ 特定できた実名/役割 の対応。特定できた
-        # ラベルのみを含む（それ以外は匿名ラベルのまま残す）。
-        self.speaker_map = speaker_map
 
 
 def generate_minutes(
@@ -106,19 +135,41 @@ def generate_minutes(
     data = _extract_json(content)
     decisions = data.get("decisions") or []
     items = data.get("action_items") or []
-    raw_map = data.get("speaker_map") or {}
-    speaker_map = {
-        str(k): str(v).strip()
-        for k, v in raw_map.items()
-        if isinstance(raw_map, dict) and str(k).strip() and str(v).strip()
-    }
     return MinutesResult(
         title=str(data.get("title") or "")[:100],
         summary=str(data.get("summary") or ""),
         decisions=[str(d) for d in decisions if str(d).strip()],
         action_items=[str(i) for i in items if str(i).strip()],
-        speaker_map=speaker_map,
     )
+
+
+def resolve_speaker_names(transcript_text: str) -> dict[str, str]:
+    """匿名の話者ラベル（話者A等）を、会話内容から実名/役割へ解決する。
+
+    議事録生成（generate_minutes）とは独立した別セッションで実行する。
+    話者識別だけをやり直した場合（rediarize）にも、この関数だけを再実行
+    すれば実名を復元できる。特定できたラベルのみを含む対応表を返す
+    （それ以外は匿名ラベルのまま残す）。
+    """
+    response = genai_client().models.generate_content(
+        model=settings.effective_gemini_model(),
+        contents=[
+            SPEAKER_NAME_PROMPT,
+            "\n\n---\n以下が会議のトランスクリプトです。\n---\n",
+            transcript_text,
+        ],
+        config=types.GenerateContentConfig(
+            max_output_tokens=_SPEAKER_NAME_MAX_OUTPUT_TOKENS,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    data = _extract_json(response.text or "")
+    raw_map = data.get("speaker_map") or {}
+    return {
+        str(k): str(v).strip()
+        for k, v in raw_map.items()
+        if isinstance(raw_map, dict) and str(k).strip() and str(v).strip()
+    }
 
 
 def _partial_summary(text: str) -> str | None:

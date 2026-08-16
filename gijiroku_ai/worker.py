@@ -261,6 +261,7 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
     # 話者識別が確定した区間だけ speaker を UPDATE し、フロントへ再配信する
     # （id は on_partial_segment で保存済みの行を出現順で引き当てる。
     # 万一対応が取れない区間があれば、取りこぼし防止のため新規に挿入する）。
+    final_seg_ids: list[int] = []
     for i, seg in enumerate(segments):
         _raise_if_cancelled(recording_id)
         seg_id = partial_seg_ids[i] if i < len(partial_seg_ids) else None
@@ -273,13 +274,16 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
                     (recording_id, seg.start_sec, seg.end_sec, seg.text, seg.speaker),
                 )
                 seg_id = cur.lastrowid
+                assert seg_id is not None
             elif seg.speaker is not None:
                 conn.execute(
                     "UPDATE transcript_segments SET speaker = ? WHERE id = ?",
                     (seg.speaker, seg_id),
                 )
             else:
+                final_seg_ids.append(seg_id)
                 continue
+        final_seg_ids.append(seg_id)
         events.publish(
             {
                 "type": "segment_added",
@@ -293,6 +297,12 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
                 },
             }
         )
+
+    # 匿名の話者ラベル（話者A 等）を、議事録生成とは別セッションで実名/役割へ
+    # 解決する。segments はここで実名へ書き換わり、後段の議事録生成に渡す
+    # トランスクリプトにも実名が反映される。
+    _raise_if_cancelled(recording_id)
+    _resolve_speaker_names(recording_id, public_id, final_seg_ids, segments)
 
     # Stage 2: Gemini でトランスクリプトから議事録生成
     last_publish = 0.0
@@ -333,15 +343,50 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
                     recording_id,
                 ),
             )
-            # Gemini が匿名ラベル→実名を特定できた場合、文字起こしの話者ラベルを
-            # 実名へ振り替える。フロントは done イベントで詳細を再取得するため、
-            # ここで DB を更新しておけば追加のイベントなしに表示へ反映される。
-            for anon_label, real_name in result.speaker_map.items():
-                conn.execute(
-                    "UPDATE transcript_segments SET speaker = ? "
-                    "WHERE recording_id = ? AND speaker = ?",
-                    (real_name, recording_id, anon_label),
-                )
+
+
+def _resolve_speaker_names(
+    recording_id: int,
+    public_id: str,
+    ids: list[int],
+    segments: list[transcribe.TranscriptSegment],
+) -> None:
+    """匿名の話者ラベル（話者A 等）を、議事録生成とは別の LLM セッションで
+    実名/役割へ解決して DB へ反映する。
+
+    generate_minutes と切り離すことで、話者識別だけを再実行した場合
+    （_rediarize_stage）にもこの関数だけを呼び直せば実名を復元できる。
+    ids と segments は同じ順序で対応している必要がある。解決できなかった
+    ラベルの区間は speaker を変更しない（segments もそのまま）。
+    """
+    transcript_text = transcribe.to_transcript_text(segments)
+    speaker_map = gemini.resolve_speaker_names(transcript_text)
+    if not speaker_map:
+        return
+    with get_conn() as conn:
+        for anon_label, real_name in speaker_map.items():
+            conn.execute(
+                "UPDATE transcript_segments SET speaker = ? "
+                "WHERE recording_id = ? AND speaker = ?",
+                (real_name, recording_id, anon_label),
+            )
+    for seg_id, seg in zip(ids, segments, strict=True):
+        if seg.speaker not in speaker_map:
+            continue
+        seg.speaker = speaker_map[seg.speaker]
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": seg.start_sec,
+                    "end_sec": seg.end_sec,
+                    "speaker": seg.speaker,
+                    "text": seg.text,
+                },
+            }
+        )
 
 
 def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) -> None:
@@ -407,6 +452,11 @@ def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) ->
                 },
             }
         )
+
+    # 話者識別だけの再実行では話者ラベルが匿名（話者A 等）に戻ってしまうため、
+    # ここでも初回処理と同じ話者名解決セッションを実行し、実名/役割へ戻す。
+    _raise_if_cancelled(recording_id)
+    _resolve_speaker_names(recording_id, public_id, [row["id"] for row in rows], segments)
 
 
 def rediarize_job(recording_id: int, public_id: str, stored_filename: str) -> None:
