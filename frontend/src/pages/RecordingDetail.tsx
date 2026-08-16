@@ -230,7 +230,7 @@ export function RecordingDetail() {
   const showSummary = isProcessing || detail.summary !== null
 
   return (
-    <div className="detail-page">
+    <div>
       {toast && (
         <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
       )}
@@ -318,7 +318,6 @@ export function RecordingDetail() {
       </div>
       </div>
 
-      <div className="detail-page-content">
       {tab === 'minutes' && (
         <div>
           {showSummary && (
@@ -392,7 +391,6 @@ export function RecordingDetail() {
           </div>
         </div>
       )}
-      </div>
     </div>
   )
 }
