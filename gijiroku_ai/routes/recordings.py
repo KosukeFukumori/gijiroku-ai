@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -211,6 +212,40 @@ def cancel_recording(public_id: str) -> dict:
     events.publish(
         {"type": "recording_updated", "recording_id": public_id, "process_status": "error"}
     )
+    return {"ok": True}
+
+
+@router.post("/recordings/{public_id}/rediarize")
+def rediarize_recording(public_id: str) -> dict:
+    """完了済み録音の話者識別だけを再実行する（文字起こしはやり直さない）。
+
+    HF_TOKEN 未設定時など、初回処理時は話者識別が付かなかった録音に対して
+    後からトークンを設定した場合の再実行に使う。
+    """
+    row = _get_row(public_id)
+    if row["process_status"] != "done":
+        raise HTTPException(409, "完了済みのアイテムのみ話者識別を再実行できます")
+    with get_conn() as conn:
+        has_segments = conn.execute(
+            "SELECT 1 FROM transcript_segments WHERE recording_id = ? LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+    if has_segments is None:
+        raise HTTPException(409, "文字起こしが無いため話者識別を再実行できません")
+
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE recordings SET process_status = 'processing', updated_at = ? WHERE id = ?",
+            (now_iso(), row["id"]),
+        )
+    events.publish(
+        {"type": "recording_updated", "recording_id": public_id, "process_status": "processing"}
+    )
+    threading.Thread(
+        target=worker.rediarize_job,
+        args=(row["id"], public_id, row["stored_filename"]),
+        daemon=True,
+    ).start()
     return {"ok": True}
 
 

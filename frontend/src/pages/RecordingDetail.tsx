@@ -8,6 +8,7 @@ import {
   cancelRecording,
   deleteRecording,
   fetchRecording,
+  rediarizeRecording,
   retryRecording,
   subscribeEvents,
 } from '../api'
@@ -197,6 +198,22 @@ export function RecordingDetail() {
     }
   }
 
+  const handleRediarize = async () => {
+    if (!(await confirm({
+      title: '話者識別を再実行',
+      message: '既存の文字起こしはそのまま、話者識別だけをやり直しますか？',
+      confirmLabel: '再実行',
+    }))) return
+    try {
+      await rediarizeRecording(recordingId)
+      setToast({ message: '話者識別の再実行を開始しました', type: 'success' })
+      void load()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '話者識別の再実行に失敗しました'
+      setToast({ message: msg, type: 'error' })
+    }
+  }
+
   if (loading && !detail) {
     return (
       <div className="loading-state">
@@ -246,6 +263,11 @@ export function RecordingDetail() {
           {detail.process_status === 'error' && (
             <button className="btn btn-secondary" onClick={() => { void handleRetry() }}>
               再試行
+            </button>
+          )}
+          {detail.process_status === 'done' && detail.segments.length > 0 && (
+            <button className="btn btn-secondary" onClick={() => { void handleRediarize() }}>
+              話者識別を再実行
             </button>
           )}
           <button className="btn btn-danger" onClick={() => { void handleDelete() }}>
@@ -299,7 +321,7 @@ export function RecordingDetail() {
           {showSummary && (
             <div className="section">
               <h2 className="section-title">議事録</h2>
-              {isProcessing ? (
+              {isProcessing && detail.summary === null ? (
                 <p className="summary-text">
                   {summaryProgress ?? ''}
                   <span className="streaming-cursor" aria-hidden>▍</span>
@@ -358,7 +380,7 @@ export function RecordingDetail() {
             {isProcessing && (
               <div className="transcribing-indicator">
                 <span className="transcribing-dot" aria-hidden />
-                文字起こし・議事録生成中...
+                {detail.summary === null ? '文字起こし・議事録生成中...' : '話者識別中...'}
               </div>
             )}
             {detail.segments.length === 0 && !isProcessing && (

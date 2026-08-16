@@ -78,6 +78,11 @@ export function retryRecording(id: string): Promise<unknown> {
   return apiFetch(`/recordings/${id}/retry`, { method: 'POST' })
 }
 
+/** 完了済み録音の話者識別だけを再実行する（文字起こしはやり直さない） */
+export function rediarizeRecording(id: string): Promise<unknown> {
+  return apiFetch(`/recordings/${id}/rediarize`, { method: 'POST' })
+}
+
 // ============================================================
 // 設定（モデル名・プロンプト）
 // ============================================================

@@ -12,9 +12,12 @@ Python レベルでは割り込めない（協調的キャンセルのチェッ�
 出力するメッセージ（type フィールド）:
 - stage   : 処理段階を表す短いテキスト
 - segment : 文字起こし途中の1区間（逐次表示用。話者ラベルは未確定）
-- segments: 文字起こしの最終結果（全区間）
+- segments: 文字起こしの最終結果（全区間。--diarize-only 指定時は出力しない）
 - turns   : 話者ダイアライゼーションの区間 [start, end, label]
 - error   : 処理失敗（メッセージ付き。終了コードも 1 になる）
+
+`--diarize-only` を指定すると文字起こしを行わず話者識別だけを実行する。
+既存の文字起こし結果に対して話者識別だけをやり直す用途向け。
 """
 
 import argparse
@@ -150,7 +153,11 @@ def _diarize(wav_path: Path) -> list[list[Any]]:
             )
         if torch.backends.mps.is_available():
             pipeline.to(torch.device("mps"))
-        diarization: Any = pipeline(str(wav_path))
+        output: Any = pipeline(str(wav_path))
+        # pyannote.audio 4.x は Annotation ではなく speaker_diarization 属性に
+        # Annotation を持つ DiarizeOutput を返す（3.x 系の Annotation 直返しとの
+        # 互換のため、無ければ output 自体を Annotation とみなす）。
+        annotation: Any = getattr(output, "speaker_diarization", output)
     except Exception:  # noqa: BLE001 - 認証失敗・未同意・DL失敗は話者識別なしで続行
         traceback.print_exc()
         _stage("話者識別に失敗したためスキップします（文字起こしのみ実行）")
@@ -158,7 +165,7 @@ def _diarize(wav_path: Path) -> list[list[Any]]:
 
     turns = [
         [float(turn.start), float(turn.end), str(label)]
-        for turn, _, label in diarization.itertracks(yield_label=True)
+        for turn, _, label in annotation.itertracks(yield_label=True)
     ]
     _stage(f"話者識別が完了しました（{time.monotonic() - started:.0f}秒）")
     return turns
@@ -167,12 +174,18 @@ def _diarize(wav_path: Path) -> list[list[Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="ローカル文字起こし＋話者識別")
     parser.add_argument("wav_path", help="16kHz mono wav のパス")
+    parser.add_argument(
+        "--diarize-only",
+        action="store_true",
+        help="文字起こしを行わず話者識別だけを実行する（再実行用）",
+    )
     args = parser.parse_args()
 
     wav_path = Path(args.wav_path)
     try:
-        segments = _transcribe(wav_path)
-        emit({"type": "segments", "items": segments})
+        if not args.diarize_only:
+            segments = _transcribe(wav_path)
+            emit({"type": "segments", "items": segments})
         emit({"type": "turns", "items": _diarize(wav_path)})
     except Exception as exc:  # noqa: BLE001 - 失敗内容を親へ伝えてから異常終了する
         traceback.print_exc()

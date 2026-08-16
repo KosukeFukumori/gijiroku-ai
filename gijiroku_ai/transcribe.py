@@ -76,6 +76,25 @@ def _to_wav16k_mono(src: Path) -> Path:
     return Path(out)
 
 
+def _worker_env() -> dict[str, str]:
+    """子プロセス用の環境変数を組み立てる。
+
+    pyannote が使う torchcodec は FFmpeg の共有ライブラリ（libavutil 等）を
+    @rpath 経由で読み込むが、Homebrew 版 FFmpeg の dylib には LC_RPATH が
+    無いため、標準の検索パスに Homebrew の lib が含まれない環境では
+    ロードに失敗する（GatedRepoError 解消後に起きる「libtorchcodec を
+    ロードできない」エラー）。Homebrew の lib ディレクトリが存在すれば
+    DYLD_LIBRARY_PATH へ足しておくことで、ホスト実行時に自動で解決する。
+    """
+    env = os.environ.copy()
+    lib_dirs = [d for d in ("/opt/homebrew/lib", "/usr/local/lib") if Path(d).is_dir()]
+    if lib_dirs:
+        existing = env.get("DYLD_LIBRARY_PATH", "")
+        merged = [*lib_dirs, *[p for p in existing.split(":") if p]]
+        env["DYLD_LIBRARY_PATH"] = ":".join(dict.fromkeys(merged))
+    return env
+
+
 def _terminate(proc: subprocess.Popen) -> None:
     """子プロセスを確実に終了させる（SIGTERM で落ちなければ SIGKILL）。"""
     if proc.poll() is not None:
@@ -93,19 +112,26 @@ def _run_worker(
     on_stage: Callable[[str], None] | None,
     on_segment: Callable[[float, float, str], None] | None,
     should_cancel: Callable[[], bool] | None,
+    diarize_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[tuple[float, float, str]]]:
     """子プロセスを起動し、文字起こし区間と話者区間を受け取る。
 
     子プロセスの標準エラーは親のものをそのまま継承させ、モデルのダウンロード
     表示やスタックトレースがサーバのログに出るようにする。
+    diarize_only=True の場合、文字起こしは行わず話者識別だけを実行する
+    （戻り値の segments は空リストになる）。
     """
+    cmd = [sys.executable, "-m", "gijiroku_ai.transcribe_worker", str(wav_path)]
+    if diarize_only:
+        cmd.append("--diarize-only")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "gijiroku_ai.transcribe_worker", str(wav_path)],
+        cmd,
         stdout=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
         bufsize=1,  # 行バッファ（逐次表示のため）
+        env=_worker_env(),
     )
 
     # readline はブロックするため、読み取りは別スレッドに任せ、本体は
@@ -165,7 +191,7 @@ def _run_worker(
     return segments, turns
 
 
-def _speaker_for(start: float, end: float, turns: list[tuple[float, float, str]]) -> str | None:
+def speaker_for(start: float, end: float, turns: list[tuple[float, float, str]]) -> str | None:
     """発話区間に最も重なる話者ターンのラベルを返す（重なりが無ければ None）。"""
     best_label: str | None = None
     best_overlap = 0.0
@@ -177,7 +203,7 @@ def _speaker_for(start: float, end: float, turns: list[tuple[float, float, str]]
     return best_label
 
 
-def _relabel_speakers(
+def relabel_speakers(
     segments: list[TranscriptSegment],
 ) -> list[TranscriptSegment]:
     """pyannote の内部ラベル（SPEAKER_00 等）を出現順の「話者A/B/C…」へ振り直す。"""
@@ -222,11 +248,28 @@ def transcribe(
             start_sec=float(s["start"]),
             end_sec=float(s["end"]),
             text=str(s["text"]),
-            speaker=_speaker_for(float(s["start"]), float(s["end"]), turns) if turns else None,
+            speaker=speaker_for(float(s["start"]), float(s["end"]), turns) if turns else None,
         )
         for s in whisper_segments
     ]
-    return _relabel_speakers(segments)
+    return relabel_speakers(segments)
+
+
+def diarize(
+    audio_path: Path,
+    on_stage: Callable[[str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[tuple[float, float, str]]:
+    """既存の文字起こし結果はそのままに、話者識別だけをやり直して話者区間を返す。
+
+    HF_TOKEN 未設定・認証失敗など話者識別が使えない場合は空リストを返す。
+    """
+    wav_path = _to_wav16k_mono(audio_path)
+    try:
+        _, turns = _run_worker(wav_path, on_stage, None, should_cancel, diarize_only=True)
+    finally:
+        wav_path.unlink(missing_ok=True)
+    return turns
 
 
 def to_transcript_text(segments: list[TranscriptSegment]) -> str:
