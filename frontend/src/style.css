@@ -208,6 +208,20 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
    共通パーツ
    ============================================================ */
 
+.detail-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--nav-height) - var(--space-6) * 2);
+}
+
+.detail-page-top { flex-shrink: 0; }
+
+.detail-page-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .page-header {
   display: flex;
   align-items: flex-start;

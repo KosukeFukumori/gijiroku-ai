@@ -230,12 +230,13 @@ export function RecordingDetail() {
   const showSummary = isProcessing || detail.summary !== null
 
   return (
-    <div>
+    <div className="detail-page">
       {toast && (
         <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
       )}
       {modal}
 
+      <div className="detail-page-top">
       <div className="page-header">
         <div className="page-header-left">
           <button className="btn btn-ghost btn-sm detail-back" onClick={() => navigate('/')}>
@@ -315,7 +316,9 @@ export function RecordingDetail() {
           文字起こし
         </button>
       </div>
+      </div>
 
+      <div className="detail-page-content">
       {tab === 'minutes' && (
         <div>
           {showSummary && (
@@ -389,6 +392,7 @@ export function RecordingDetail() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
