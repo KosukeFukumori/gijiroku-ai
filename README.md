@@ -87,6 +87,9 @@ cd frontend && npm install && npm run build && cd ..
 uv run uvicorn gijiroku_ai.main:app --host 0.0.0.0 --port 8000
 ```
 
+起動ポートは `.env` ではなく、上記コマンドの `--port` オプションで指定します。
+変更したい場合は `--port` の値を書き換えてください。
+
 初回の文字起こし時に mlx-whisper / pyannote のモデル（数 GB）が
 自動でダウンロードされます。
 
@@ -110,7 +113,6 @@ http://localhost:8000
 | `GEMINI_MODEL` | 議事録生成に使う Gemini モデル | `gemini-2.5-flash` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | サービスアカウント鍵 JSON のパス | `./gcp/service-account.json` |
 | `STATIC_DIR` | フロントエンドのビルド成果物ディレクトリ | `frontend/dist` |
-| `PORT` | 公開ポート | `8000` |
 | `TZ` | タイムゾーン | `Asia/Tokyo` |
 
 <!-- markdownlint-enable MD013 -->
