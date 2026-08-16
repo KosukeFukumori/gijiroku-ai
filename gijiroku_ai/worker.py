@@ -189,15 +189,43 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
     logger.info("処理開始: %s", public_id)
 
     def on_stage(text: str) -> None:
-        _raise_if_cancelled(recording_id)
         events.publish(
             {"type": "stage_progress", "recording_id": public_id, "text": text}
         )
 
-    # Stage 1: ローカル文字起こし＋話者識別（長時間音声だと数分〜十数分かかり、
-    # その間は segment_added が出せないため stage_progress でつなぐ）
+    def on_partial_segment(start: float, end: float, text: str) -> None:
+        """文字起こし途中の1区間を配信する（話者ラベルはまだ未確定）。
+
+        DB へは全区間の確定後にまとめて保存するため、ここでは表示専用の
+        イベントとして流すだけにする。
+        """
+        events.publish(
+            {
+                "type": "partial_segment",
+                "recording_id": public_id,
+                "start_sec": start,
+                "end_sec": end,
+                "text": text,
+            }
+        )
+
+    def is_cancelled() -> bool:
+        with _active_lock:
+            return recording_id in _cancelled
+
+    # Stage 1: ローカル文字起こし＋話者識別（長時間音声だと数分〜十数分かかる。
+    # 子プロセスで実行し、進捗を stage_progress / partial_segment で中継しつつ、
+    # 中断要求が来たら子プロセスごと終了させる）
     _raise_if_cancelled(recording_id)
-    segments = transcribe.transcribe(local_path, on_stage=on_stage)
+    try:
+        segments = transcribe.transcribe(
+            local_path,
+            on_stage=on_stage,
+            on_segment=on_partial_segment,
+            should_cancel=is_cancelled,
+        )
+    except transcribe.Cancelled as exc:
+        raise _Cancelled from exc
     _raise_if_cancelled(recording_id)
     logger.info("文字起こし完了: %s（%d区間）", public_id, len(segments))
 

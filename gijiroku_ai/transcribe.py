@@ -1,4 +1,4 @@
-"""ローカル文字起こし＋話者識別（Apple Silicon / Metal 前提）。
+"""ローカル文字起こし＋話者識別（Apple Silicon / Metal 前提）の呼び出し口。
 
 長時間の会議音声をクラウド API に丸ごと渡すと不安定なため、文字起こしと
 話者識別は macOS ホスト上でローカルに行い、確定したテキスト（話者ラベル付き）
@@ -7,27 +7,39 @@
 - 文字起こし: mlx-whisper（Apple MLX / Metal 最適化。large-v3 系）
 - 話者識別  : pyannote.audio 3.1（PyTorch MPS で Metal を利用）
 
-いずれも macOS ネイティブでしか GPU を使えないため、このモジュールは
-Docker コンテナ内ではなくホスト上のプロセスで動かすことを前提とする。
+いずれも macOS ネイティブでしか GPU を使えないため、Docker コンテナ内では
+なくホスト上のプロセスで動かすことを前提とする。
 
-pyannote/speaker-diarization-3.1 はゲート付きモデルのため、初回利用時に
-HuggingFace 上での規約同意とアクセストークン（HF_TOKEN）が必要になる。
-トークン未設定・同意なしの場合は話者識別を諦め、文字起こしのみを返す
-（speaker=None）。文字起こし自体はトークン不要で常に動く。
+重い処理は子プロセス（gijiroku_ai.transcribe_worker）で実行する。mlx-whisper /
+pyannote の呼び出しは一度入ると数分〜十数分ブロックし、同一プロセス内では
+中断できないため、中断要求時に子プロセスごと kill できるようにするのが目的。
+子プロセスは進捗（処理段階・確定した文字起こし区間）を NDJSON で流してくるので、
+それをコールバック経由で SSE へ中継し、ブラウザに逐次表示する。
 """
 
+import json
 import logging
+import os
+import queue
 import subprocess
+import sys
 import tempfile
-import time
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gijiroku_ai import settings
+from gijiroku_ai.transcribe_worker import SENTINEL
 
 logger = logging.getLogger(__name__)
+
+# 中断要求の確認間隔（秒）。子プロセスの出力待ちをこの間隔で打ち切って確認する。
+_CANCEL_POLL_SEC = 0.3
+
+
+class Cancelled(RuntimeError):
+    """中断要求により文字起こしを打ち切ったことを表す。"""
 
 
 @dataclass
@@ -40,22 +52,15 @@ class TranscriptSegment:
     speaker: str | None  # 「話者A」等。話者識別できない場合は None
 
 
-# mlx-whisper / pyannote のモデルはプロセス内で使い回す（初期化が重いため）。
-_diarize_pipeline: Any | None = None
-_diarize_unavailable = False  # トークン無し等で使えないと判明したら再試行しない
-
-
 def _to_wav16k_mono(src: Path) -> Path:
     """pyannote / whisper 双方が扱いやすい 16kHz mono wav へ変換する。
 
-    mlx-whisper は内部で ffmpeg を呼ぶが、pyannote には波形を直接渡したいので
+    mlx-whisper は内部で ffmpeg を呼ぶが、pyannote には同じ波形を渡したいので
     ここで一度だけ 16kHz mono wav に正規化し、両者で共有する。
     """
     fd, out = tempfile.mkstemp(suffix=".wav")
-    Path(out).unlink(missing_ok=True)  # mkstemp が作った空ファイルは ffmpeg が上書き
-    import os
-
     os.close(fd)
+    Path(out).unlink(missing_ok=True)  # mkstemp が作った空ファイルは ffmpeg が上書き
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-v", "error", "-i", str(src),
@@ -71,77 +76,93 @@ def _to_wav16k_mono(src: Path) -> Path:
     return Path(out)
 
 
-def _transcribe_words(wav_path: Path) -> list[dict[str, Any]]:
-    """mlx-whisper で文字起こしし、Whisper のセグメント配列を返す。
-
-    word_timestamps=True を指定して単語単位の時刻も取得する（話者の割り当て
-    精度を上げるため）。返り値は Whisper 標準の segment dict のリスト。
-    """
-    import mlx_whisper
-
-    result: dict[str, Any] = mlx_whisper.transcribe(
-        str(wav_path),
-        path_or_hf_repo=settings.effective_whisper_model(),
-        language=settings.effective_whisper_language(),
-        word_timestamps=True,
-    )
-    segments = result.get("segments") or []
-    return list(segments)
-
-
-def _load_diarizer() -> Any | None:
-    """pyannote の話者ダイアライゼーション pipeline を取得する（無ければ None）。
-
-    ゲートモデルのため HF_TOKEN と規約同意が必要。取得できない場合は理由を
-    ログに出して None を返し、以降は再試行しない（話者識別なしで続行する）。
-    MPS（Metal）が使える場合はそちらへ載せる。
-    """
-    global _diarize_pipeline, _diarize_unavailable
-    if _diarize_pipeline is not None:
-        return _diarize_pipeline
-    if _diarize_unavailable:
-        return None
-
-    token = settings.effective_hf_token()
-    if not token:
-        _diarize_unavailable = True
-        return None
-
+def _terminate(proc: subprocess.Popen) -> None:
+    """子プロセスを確実に終了させる（SIGTERM で落ちなければ SIGKILL）。"""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
     try:
-        import torch
-        from pyannote.audio import Pipeline
-
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1", token=token
-        )
-        if pipeline is None:
-            raise RuntimeError(
-                "pyannote pipeline を取得できませんでした"
-                "（規約未同意またはトークン不正の可能性）"
-            )
-        if torch.backends.mps.is_available():
-            pipeline.to(torch.device("mps"))
-        _diarize_pipeline = pipeline
-        return pipeline
-    except Exception:  # 認証失敗・未同意・DL失敗など全て話者識別なしで続行
-        logger.exception(
-            "pyannote pipeline の初期化に失敗したため話者識別をスキップします"
-            "（規約同意・トークンを確認してください）"
-        )
-        _diarize_unavailable = True
-        return None
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
-def _diarize(wav_path: Path) -> list[tuple[float, float, str]]:
-    """話者区間 (start, end, speaker_label) のリストを返す。使えなければ空。"""
-    pipeline = _load_diarizer()
-    if pipeline is None:
-        return []
-    diarization = pipeline(str(wav_path))
+def _run_worker(
+    wav_path: Path,
+    on_stage: Callable[[str], None] | None,
+    on_segment: Callable[[float, float, str], None] | None,
+    should_cancel: Callable[[], bool] | None,
+) -> tuple[list[dict[str, Any]], list[tuple[float, float, str]]]:
+    """子プロセスを起動し、文字起こし区間と話者区間を受け取る。
+
+    子プロセスの標準エラーは親のものをそのまま継承させ、モデルのダウンロード
+    表示やスタックトレースがサーバのログに出るようにする。
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "gijiroku_ai.transcribe_worker", str(wav_path)],
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,  # 行バッファ（逐次表示のため）
+    )
+
+    # readline はブロックするため、読み取りは別スレッドに任せ、本体は
+    # キューをタイムアウト付きで待ちながら中断要求を確認する。
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def reader() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+
+    segments: list[dict[str, Any]] = []
     turns: list[tuple[float, float, str]] = []
-    for turn, _, label in diarization.itertracks(yield_label=True):
-        turns.append((float(turn.start), float(turn.end), str(label)))
-    return turns
+    error: str | None = None
+    try:
+        while True:
+            if should_cancel is not None and should_cancel():
+                raise Cancelled
+            try:
+                line = lines.get(timeout=_CANCEL_POLL_SEC)
+            except queue.Empty:
+                continue
+            if line is None:
+                break
+            if not line.startswith(SENTINEL):
+                continue  # 想定外の標準出力（ダウンロード表示など）は無視
+            message = json.loads(line[len(SENTINEL):])
+            kind = message.get("type")
+            if kind == "stage":
+                text = str(message["text"])
+                logger.info(text)
+                if on_stage is not None:
+                    on_stage(text)
+            elif kind == "segment" and on_segment is not None:
+                on_segment(
+                    float(message["start"]), float(message["end"]), str(message["text"])
+                )
+            elif kind == "segments":
+                segments = list(message["items"])
+            elif kind == "turns":
+                turns = [(float(s), float(e), str(label)) for s, e, label in message["items"]]
+            elif kind == "error":
+                error = str(message["message"])
+    finally:
+        _terminate(proc)
+
+    if error is not None:
+        raise RuntimeError(f"文字起こしに失敗しました: {error}")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"文字起こしプロセスが異常終了しました（終了コード {proc.returncode}）"
+        )
+    return segments, turns
 
 
 def _speaker_for(start: float, end: float, turns: list[tuple[float, float, str]]) -> str | None:
@@ -174,55 +195,37 @@ def _relabel_speakers(
 def transcribe(
     audio_path: Path,
     on_stage: Callable[[str], None] | None = None,
+    on_segment: Callable[[float, float, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[TranscriptSegment]:
     """音声ファイルを文字起こしし、話者ラベル付きセグメントを返す。
 
     話者識別が使えない環境（HF_TOKEN 無し等）では speaker=None のまま返す。
-    長時間音声だと文字起こし・話者識別それぞれに数分〜十数分かかり、その間は
-    セグメント単位の進捗を出せない（mlx-whisper / pyannote とも結果が出るまで
-    まとまった処理のため）。on_stage を渡すと、せめて「今どの段階か」を
-    都度通知できる（SSE 経由でブラウザへ表示する用途を想定）。
-    """
-    def stage(text: str) -> None:
-        logger.info(text)
-        if on_stage is not None:
-            on_stage(text)
 
+    - on_stage:      処理段階が変わるたびに呼ばれる（SSE で表示する用途）
+    - on_segment:    文字起こしが1区間確定するたびに (start, end, text) で
+                     呼ばれる。話者ラベルは全区間の確定後に付くため、ここでは
+                     まだ分からない
+    - should_cancel: 定期的に呼ばれ、True を返すと子プロセスを終了して
+                     Cancelled を送出する
+    """
     wav_path = _to_wav16k_mono(audio_path)
     try:
-        stage(f"文字起こしを開始します（モデル: {settings.effective_whisper_model()}）")
-        t0 = time.monotonic()
-        whisper_segments = _transcribe_words(wav_path)
-        stage(
-            f"文字起こしが完了しました（{len(whisper_segments)}区間、"
-            f"{time.monotonic() - t0:.0f}秒）"
+        whisper_segments, turns = _run_worker(
+            wav_path, on_stage, on_segment, should_cancel
         )
-
-        if settings.effective_hf_token():
-            stage("話者識別を開始します")
-            t0 = time.monotonic()
-            turns = _diarize(wav_path)
-            if _diarize_unavailable:
-                stage("話者識別に失敗したためスキップします（文字起こしのみ実行）")
-            else:
-                stage(f"話者識別が完了しました（{time.monotonic() - t0:.0f}秒）")
-        else:
-            stage("HF_TOKEN が未設定のため話者識別をスキップします")
-            turns = []
     finally:
         wav_path.unlink(missing_ok=True)
 
-    segments: list[TranscriptSegment] = []
-    for s in whisper_segments:
-        text = str(s.get("text") or "").strip()
-        if not text:
-            continue
-        start = float(s.get("start") or 0.0)
-        end = float(s.get("end") or 0.0)
-        speaker = _speaker_for(start, end, turns) if turns else None
-        segments.append(
-            TranscriptSegment(start_sec=start, end_sec=end, text=text, speaker=speaker)
+    segments = [
+        TranscriptSegment(
+            start_sec=float(s["start"]),
+            end_sec=float(s["end"]),
+            text=str(s["text"]),
+            speaker=_speaker_for(float(s["start"]), float(s["end"]), turns) if turns else None,
         )
+        for s in whisper_segments
+    ]
     return _relabel_speakers(segments)
 
 

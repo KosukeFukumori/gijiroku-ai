@@ -11,6 +11,9 @@
                        ローカル文字起こし・話者識別のように segment_added /
                        summary_progress が出るまで無反応に見える区間の
                        つなぎとして使う）
+- partial_segment:    文字起こし途中の1区間（逐次表示用。話者ラベル未確定で
+                       DB にはまだ保存されていない。確定後に segment_added が
+                       改めて流れる）
 - segment_added:      文字起こしセグメントが1件追加された
 - summary_progress:   要約の生成途中テキスト（累積）
 """

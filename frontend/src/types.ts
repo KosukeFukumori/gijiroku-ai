@@ -69,5 +69,12 @@ export type AppEvent =
   | { type: 'recordings_changed' }
   | { type: 'recording_updated'; recording_id: string; process_status: ProcessStatus }
   | { type: 'stage_progress'; recording_id: string; text: string }
+  | {
+      type: 'partial_segment'
+      recording_id: string
+      start_sec: number
+      end_sec: number
+      text: string
+    }
   | { type: 'segment_added'; recording_id: string; segment: Segment }
   | { type: 'summary_progress'; recording_id: string; text: string }
