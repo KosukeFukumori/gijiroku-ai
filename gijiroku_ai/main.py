@@ -5,13 +5,16 @@ DB 初期化とバックグラウンドワーカー（議事録生成）を開�
 """
 
 import logging
+import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import FrameType
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from gijiroku_ai import events as events_module
 from gijiroku_ai import worker
 from gijiroku_ai.config import get_config
 from gijiroku_ai.db import init_db
@@ -23,12 +26,37 @@ logging.basicConfig(
 )
 
 
+def _hook_shutdown_signals() -> None:
+    """SIGINT/SIGTERM を横取りし、uvicorn 本来の処理より先に SSE を止める。
+
+    uvicorn はグレースフルシャットダウン時、既存コネクション（SSE の常時
+    接続を含む）が閉じるのを待ってから lifespan の shutdown イベントを
+    発行する。そのため lifespan 側で events.shutdown() を呼んでも「SSE が
+    閉じるのを待っている間は絶対に呼ばれない」というデッドロックになる。
+    シグナル受信時点で即座に events.shutdown() を呼び、直後に uvicorn が
+    既に登録済みのハンドラへ処理を引き継ぐことで両立させる。
+    """
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        original = signal.getsignal(sig)
+
+        def _handler(
+            signum: int, frame: FrameType | None, _original=original
+        ) -> None:
+            events_module.shutdown()
+            if callable(_original):
+                _original(signum, frame)
+
+        signal.signal(sig, _handler)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
     worker.start()
+    _hook_shutdown_signals()
     yield
     worker.stop()
+    events_module.shutdown()
 
 
 app = FastAPI(title="議事録AI", lifespan=lifespan)

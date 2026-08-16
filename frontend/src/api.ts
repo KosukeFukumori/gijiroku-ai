@@ -69,8 +69,18 @@ export function deleteRecording(id: string): Promise<unknown> {
   return apiFetch(`/recordings/${id}`, { method: 'DELETE' })
 }
 
+/** 処理待ち・処理中の録音を中断する（エラー状態になり、再試行できる） */
+export function cancelRecording(id: string): Promise<unknown> {
+  return apiFetch(`/recordings/${id}/cancel`, { method: 'POST' })
+}
+
 export function retryRecording(id: string): Promise<unknown> {
   return apiFetch(`/recordings/${id}/retry`, { method: 'POST' })
+}
+
+/** 完了済み録音の話者識別だけを再実行する（文字起こしはやり直さない） */
+export function rediarizeRecording(id: string): Promise<unknown> {
+  return apiFetch(`/recordings/${id}/rediarize`, { method: 'POST' })
 }
 
 // ============================================================

@@ -3,7 +3,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { audioUrl, deleteRecording, fetchRecording, retryRecording, subscribeEvents } from '../api'
+import {
+  audioUrl,
+  cancelRecording,
+  deleteRecording,
+  fetchRecording,
+  rediarizeRecording,
+  retryRecording,
+  subscribeEvents,
+} from '../api'
 import type { RecordingDetail as RecordingDetailType, Segment } from '../types'
 import { ProcessBadge } from '../components/Badge'
 import { Toast } from '../components/Toast'
@@ -55,6 +63,9 @@ export function RecordingDetail() {
   const { confirm, modal } = useConfirm()
   // SSE から受信した要約の累積テキスト（要約中のみ表示）
   const [summaryProgress, setSummaryProgress] = useState<string | null>(null)
+  // SSE から受信した処理段階のテキスト（ローカル文字起こし・話者識別など、
+  // segment_added / summary_progress が出るまでの間の状況表示用）
+  const [stageText, setStageText] = useState<string | null>(null)
   // 現在再生中のセグメント id
   const [activeSegId, setActiveSegId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -76,6 +87,17 @@ export function RecordingDetail() {
     void load()
   }, [load])
 
+  // 処理中に開いた場合は、逐次表示される文字起こしが見えるようタブを切り替える
+  // （初回の読み込み時のみ。以降のユーザー操作を上書きしない）
+  const autoTabDone = useRef(false)
+  useEffect(() => {
+    if (!detail || autoTabDone.current) return
+    autoTabDone.current = true
+    if (detail.process_status === 'processing' || detail.process_status === 'pending') {
+      setTab('transcript')
+    }
+  }, [detail])
+
   // SSE でリアルタイム更新（この録音の recording_id のイベントのみ処理）
   const loadRef = useRef(load)
   loadRef.current = load
@@ -88,18 +110,27 @@ export function RecordingDetail() {
           prev ? { ...prev, process_status: event.process_status } : prev,
         )
         void loadRef.current()
-        if (event.process_status !== 'processing') {
+        if (event.process_status === 'processing') {
+          setStageText(null)
+        } else {
           setSummaryProgress(null)
+          setStageText(null)
         }
+      } else if (event.type === 'stage_progress' && event.recording_id === recordingId) {
+        setStageText(event.text)
       } else if (event.type === 'segment_added' && event.recording_id === recordingId) {
         setDetail((prev) => {
           if (!prev) return prev
           const seg = event.segment as Segment
-          if (prev.segments.some((s) => s.id === seg.id)) return prev
-          return { ...prev, segments: [...prev.segments, seg] }
+          const idx = prev.segments.findIndex((s) => s.id === seg.id)
+          if (idx === -1) return { ...prev, segments: [...prev.segments, seg] }
+          const segments = [...prev.segments]
+          segments[idx] = seg
+          return { ...prev, segments }
         })
       } else if (event.type === 'summary_progress' && event.recording_id === recordingId) {
         setSummaryProgress(event.text)
+        setStageText(null)
       }
     })
     return unsubscribe
@@ -139,6 +170,23 @@ export function RecordingDetail() {
     }
   }
 
+  const handleCancel = async () => {
+    if (!(await confirm({
+      title: '処理を中断',
+      message: '進行中の文字起こし・議事録生成を中断しますか？中断したものは「再試行」で最初からやり直せます。',
+      confirmLabel: '中断',
+      danger: true,
+    }))) return
+    try {
+      await cancelRecording(recordingId)
+      setToast({ message: '処理を中断しました', type: 'success' })
+      void load()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '中断に失敗しました'
+      setToast({ message: msg, type: 'error' })
+    }
+  }
+
   const handleRetry = async () => {
     try {
       await retryRecording(recordingId)
@@ -146,6 +194,22 @@ export function RecordingDetail() {
       void load()
     } catch (e) {
       const msg = e instanceof Error ? e.message : '再試行の開始に失敗しました'
+      setToast({ message: msg, type: 'error' })
+    }
+  }
+
+  const handleRediarize = async () => {
+    if (!(await confirm({
+      title: '話者識別を再実行',
+      message: '既存の文字起こしはそのまま、話者識別だけをやり直しますか？',
+      confirmLabel: '再実行',
+    }))) return
+    try {
+      await rediarizeRecording(recordingId)
+      setToast({ message: '話者識別の再実行を開始しました', type: 'success' })
+      void load()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '話者識別の再実行に失敗しました'
       setToast({ message: msg, type: 'error' })
     }
   }
@@ -161,6 +225,8 @@ export function RecordingDetail() {
   if (!detail) return <p className="empty-text">録音が見つかりません</p>
 
   const isProcessing = detail.process_status === 'processing'
+  // 中断できる状態（処理待ち・処理中）
+  const isPending = isProcessing || detail.process_status === 'pending'
   const showSummary = isProcessing || detail.summary !== null
 
   return (
@@ -170,6 +236,7 @@ export function RecordingDetail() {
       )}
       {modal}
 
+      <div className="detail-page-top">
       <div className="page-header">
         <div className="page-header-left">
           <button className="btn btn-ghost btn-sm detail-back" onClick={() => navigate('/')}>
@@ -189,9 +256,19 @@ export function RecordingDetail() {
           </div>
         </div>
         <div className="detail-actions">
+          {isPending && (
+            <button className="btn btn-secondary" onClick={() => { void handleCancel() }}>
+              中断
+            </button>
+          )}
           {detail.process_status === 'error' && (
             <button className="btn btn-secondary" onClick={() => { void handleRetry() }}>
               再試行
+            </button>
+          )}
+          {detail.process_status === 'done' && detail.segments.length > 0 && (
+            <button className="btn btn-secondary" onClick={() => { void handleRediarize() }}>
+              話者識別を再実行
             </button>
           )}
           <button className="btn btn-danger" onClick={() => { void handleDelete() }}>
@@ -204,6 +281,13 @@ export function RecordingDetail() {
         <div className="error-box">
           <strong>エラー:</strong> {detail.error_message}
         </div>
+      )}
+
+      {isProcessing && stageText && (
+        <p className="stage-progress-text">
+          <span className="loading-spinner" aria-hidden />
+          {stageText}
+        </p>
       )}
 
       <audio
@@ -232,13 +316,14 @@ export function RecordingDetail() {
           文字起こし
         </button>
       </div>
+      </div>
 
       {tab === 'minutes' && (
         <div>
           {showSummary && (
             <div className="section">
               <h2 className="section-title">議事録</h2>
-              {isProcessing ? (
+              {isProcessing && detail.summary === null ? (
                 <p className="summary-text">
                   {summaryProgress ?? ''}
                   <span className="streaming-cursor" aria-hidden>▍</span>
@@ -297,7 +382,7 @@ export function RecordingDetail() {
             {isProcessing && (
               <div className="transcribing-indicator">
                 <span className="transcribing-dot" aria-hidden />
-                文字起こし・議事録生成中...
+                {detail.summary === null ? '文字起こし・議事録生成中...' : '話者識別中...'}
               </div>
             )}
             {detail.segments.length === 0 && !isProcessing && (

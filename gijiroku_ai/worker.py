@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from gijiroku_ai import events, gemini, storage
+from gijiroku_ai import events, gemini, storage, transcribe
 from gijiroku_ai.db import get_conn
 from gijiroku_ai.timeutil import now_iso
 
@@ -180,8 +180,131 @@ def _fail(recording_id: int, public_id: str, exc: Exception) -> None:
 
 
 def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> None:
-    """Gemini で文字起こし・話者識別・議事録生成・保存までをまとめて行う。"""
+    """2段階で処理する。
+
+    1. ローカル（mlx-whisper + pyannote）で文字起こし・話者識別 → segments 保存
+    2. 話者ラベル付きトランスクリプトを Gemini に渡して議事録生成 → 保存
+    """
     local_path = storage.path_for(stored_filename)
+    logger.info("処理開始: %s", public_id)
+
+    def on_stage(text: str) -> None:
+        events.publish(
+            {"type": "stage_progress", "recording_id": public_id, "text": text}
+        )
+
+    # 確定順に並んだ DB 上の id。話者識別完了後、最終結果の区間と出現順で
+    # 対応付けて speaker を UPDATE するために使う（浮動小数点の start_sec を
+    # キーにした突き合わせは、verbose 出力のテキストをパースした値と
+    # mlx-whisper の生の戻り値との丸め誤差で一致しないことがあり、
+    # 区間の重複挿入を招くため使わない）。
+    partial_seg_ids: list[int] = []
+
+    def on_partial_segment(start: float, end: float, text: str) -> None:
+        """文字起こしが1区間確定するたびに、話者ラベル未確定のまま即 DB へ保存する。
+
+        リロード時にも直前までの文字起こし内容が見えるよう、話者識別の完了を
+        待たずに保存する。話者が確定したら同じ id で segment_added を再配信し、
+        フロント側で該当区間を更新させる。
+        """
+        with get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO transcript_segments "
+                "(recording_id, start_sec, end_sec, text, speaker) "
+                "VALUES (?, ?, ?, ?, NULL)",
+                (recording_id, start, end, text),
+            )
+            seg_id = cur.lastrowid
+            assert seg_id is not None
+        partial_seg_ids.append(seg_id)
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": start,
+                    "end_sec": end,
+                    "speaker": None,
+                    "text": text,
+                },
+            }
+        )
+
+    def is_cancelled() -> bool:
+        with _active_lock:
+            return recording_id in _cancelled
+
+    # Stage 1: ローカル文字起こし＋話者識別（長時間音声だと数分〜十数分かかる。
+    # 子プロセスで実行し、進捗を stage_progress / segment_added で中継しつつ、
+    # 中断要求が来たら子プロセスごと終了させる）
+    _raise_if_cancelled(recording_id)
+    try:
+        segments = transcribe.transcribe(
+            local_path,
+            on_stage=on_stage,
+            on_segment=on_partial_segment,
+            should_cancel=is_cancelled,
+        )
+    except transcribe.Cancelled as exc:
+        raise _Cancelled from exc
+    _raise_if_cancelled(recording_id)
+    logger.info("文字起こし完了: %s（%d区間）", public_id, len(segments))
+
+    duration = segments[-1].end_sec if segments else 0.0
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE recordings SET duration_sec = ? WHERE id = ?",
+            (duration, recording_id),
+        )
+
+    # 話者識別が確定した区間だけ speaker を UPDATE し、フロントへ再配信する
+    # （id は on_partial_segment で保存済みの行を出現順で引き当てる。
+    # 万一対応が取れない区間があれば、取りこぼし防止のため新規に挿入する）。
+    final_seg_ids: list[int] = []
+    for i, seg in enumerate(segments):
+        _raise_if_cancelled(recording_id)
+        seg_id = partial_seg_ids[i] if i < len(partial_seg_ids) else None
+        with get_conn() as conn:
+            if seg_id is None:
+                cur = conn.execute(
+                    "INSERT INTO transcript_segments "
+                    "(recording_id, start_sec, end_sec, text, speaker) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (recording_id, seg.start_sec, seg.end_sec, seg.text, seg.speaker),
+                )
+                seg_id = cur.lastrowid
+                assert seg_id is not None
+            elif seg.speaker is not None:
+                conn.execute(
+                    "UPDATE transcript_segments SET speaker = ? WHERE id = ?",
+                    (seg.speaker, seg_id),
+                )
+            else:
+                final_seg_ids.append(seg_id)
+                continue
+        final_seg_ids.append(seg_id)
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": seg.start_sec,
+                    "end_sec": seg.end_sec,
+                    "speaker": seg.speaker,
+                    "text": seg.text,
+                },
+            }
+        )
+
+    # 匿名の話者ラベル（話者A 等）を、議事録生成とは別セッションで実名/役割へ
+    # 解決する。segments はここで実名へ書き換わり、後段の議事録生成に渡す
+    # トランスクリプトにも実名が反映される。
+    _raise_if_cancelled(recording_id)
+    _resolve_speaker_names(recording_id, public_id, final_seg_ids, segments)
+
+    # Stage 2: Gemini でトランスクリプトから議事録生成
     last_publish = 0.0
 
     def on_partial(text: str) -> None:
@@ -195,41 +318,15 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             {"type": "summary_progress", "recording_id": public_id, "text": text}
         )
 
-    result = gemini.process_recording(local_path, on_partial=on_partial)
-
-    _raise_if_cancelled(recording_id)
-    with get_conn() as conn:
-        conn.execute(
-            "DELETE FROM transcript_segments WHERE recording_id = ?", (recording_id,)
-        )
-        conn.execute(
-            "UPDATE recordings SET duration_sec = ? WHERE id = ?",
-            (result.duration_sec, recording_id),
-        )
-    for seg in result.segments:
-        _raise_if_cancelled(recording_id)
-        with get_conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO transcript_segments "
-                "(recording_id, start_sec, end_sec, text, speaker) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (recording_id, seg["start_sec"], seg["end_sec"], seg["text"],
-                 seg["speaker"]),
-            )
-            seg_id = cur.lastrowid
-        events.publish(
-            {
-                "type": "segment_added",
-                "recording_id": public_id,
-                "segment": {
-                    "id": seg_id,
-                    "start_sec": seg["start_sec"],
-                    "end_sec": seg["end_sec"],
-                    "speaker": seg["speaker"],
-                    "text": seg["text"],
-                },
-            }
-        )
+    events.publish(
+        {
+            "type": "stage_progress",
+            "recording_id": public_id,
+            "text": "議事録を生成しています（Gemini）",
+        }
+    )
+    transcript_text = transcribe.to_transcript_text(segments)
+    result = gemini.generate_minutes(transcript_text, on_partial=on_partial)
 
     with _active_lock:
         if recording_id in _cancelled:
@@ -246,6 +343,142 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
                     recording_id,
                 ),
             )
+
+
+def _resolve_speaker_names(
+    recording_id: int,
+    public_id: str,
+    ids: list[int],
+    segments: list[transcribe.TranscriptSegment],
+) -> None:
+    """匿名の話者ラベル（話者A 等）を、議事録生成とは別の LLM セッションで
+    実名/役割へ解決して DB へ反映する。
+
+    generate_minutes と切り離すことで、話者識別だけを再実行した場合
+    （_rediarize_stage）にもこの関数だけを呼び直せば実名を復元できる。
+    ids と segments は同じ順序で対応している必要がある。解決できなかった
+    ラベルの区間は speaker を変更しない（segments もそのまま）。
+    """
+    transcript_text = transcribe.to_transcript_text(segments)
+    speaker_map = gemini.resolve_speaker_names(transcript_text)
+    if not speaker_map:
+        return
+    with get_conn() as conn:
+        for anon_label, real_name in speaker_map.items():
+            conn.execute(
+                "UPDATE transcript_segments SET speaker = ? "
+                "WHERE recording_id = ? AND speaker = ?",
+                (real_name, recording_id, anon_label),
+            )
+    for seg_id, seg in zip(ids, segments, strict=True):
+        if seg.speaker not in speaker_map:
+            continue
+        seg.speaker = speaker_map[seg.speaker]
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": seg.start_sec,
+                    "end_sec": seg.end_sec,
+                    "speaker": seg.speaker,
+                    "text": seg.text,
+                },
+            }
+        )
+
+
+def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) -> None:
+    """既存の文字起こし区間はそのまま、話者識別だけをやり直して speaker を更新する。"""
+    local_path = storage.path_for(stored_filename)
+
+    def on_stage(text: str) -> None:
+        events.publish(
+            {"type": "stage_progress", "recording_id": public_id, "text": text}
+        )
+
+    def is_cancelled() -> bool:
+        with _active_lock:
+            return recording_id in _cancelled
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, start_sec, end_sec, text FROM transcript_segments "
+            "WHERE recording_id = ? ORDER BY start_sec",
+            (recording_id,),
+        ).fetchall()
+
+    _raise_if_cancelled(recording_id)
+    try:
+        turns = transcribe.diarize(local_path, on_stage=on_stage, should_cancel=is_cancelled)
+    except transcribe.Cancelled as exc:
+        raise _Cancelled from exc
+    _raise_if_cancelled(recording_id)
+
+    if not turns:
+        raise RuntimeError(
+            "話者識別に失敗しました（HF_TOKEN 未設定・規約未同意・認証エラーの"
+            "可能性があります。サーバのログを確認してください）"
+        )
+
+    segments = [
+        transcribe.TranscriptSegment(
+            start_sec=row["start_sec"], end_sec=row["end_sec"], text=row["text"], speaker=None
+        )
+        for row in rows
+    ]
+    for seg in segments:
+        seg.speaker = transcribe.speaker_for(seg.start_sec, seg.end_sec, turns)
+    segments = transcribe.relabel_speakers(segments)
+
+    for row, seg in zip(rows, segments, strict=True):
+        _raise_if_cancelled(recording_id)
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE transcript_segments SET speaker = ? WHERE id = ?",
+                (seg.speaker, row["id"]),
+            )
+        events.publish(
+            {
+                "type": "segment_added",
+                "recording_id": public_id,
+                "segment": {
+                    "id": row["id"],
+                    "start_sec": seg.start_sec,
+                    "end_sec": seg.end_sec,
+                    "speaker": seg.speaker,
+                    "text": seg.text,
+                },
+            }
+        )
+
+    # 話者識別だけの再実行では話者ラベルが匿名（話者A 等）に戻ってしまうため、
+    # ここでも初回処理と同じ話者名解決セッションを実行し、実名/役割へ戻す。
+    _raise_if_cancelled(recording_id)
+    _resolve_speaker_names(recording_id, public_id, [row["id"] for row in rows], segments)
+
+
+def rediarize_job(recording_id: int, public_id: str, stored_filename: str) -> None:
+    """完了済み録音に対し、話者識別だけを再実行する（文字起こしはやり直さない）。
+
+    処理キュー（pending 拾い上げ）とは別に、API から直接スレッド起動で呼ばれる。
+    """
+    with _activate(recording_id) as acquired:
+        if not acquired:
+            return  # 既に処理中
+        try:
+            _rediarize_stage(recording_id, public_id, stored_filename)
+            _set_status_checked(recording_id, public_id, "done")
+            logger.info("話者識別の再実行が完了: %s", public_id)
+        except _Cancelled:
+            logger.info("中断要求により話者識別の再実行を打ち切り（状態は要求元が設定）: %s", public_id)
+        except Exception as exc:
+            logger.exception("話者識別の再実行に失敗: %s", public_id)
+            with _active_lock:
+                if recording_id in _cancelled:
+                    return
+            _set_status(recording_id, public_id, "error", str(exc))
 
 
 def process_job(recording_id: int, public_id: str, stored_filename: str) -> None:

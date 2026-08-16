@@ -7,7 +7,14 @@
 イベントの種類（type フィールド）:
 - recordings_changed: 一覧に増減・状態変化があった（一覧の再読込を促す）
 - recording_updated:  特定録音の process_status が変わった
-- segment_added:      文字起こしセグメントが1件追加された
+- stage_progress:     処理中の大まかな段階を表す短いテキスト（都度上書き。
+                       ローカル文字起こし・話者識別のように segment_added /
+                       summary_progress が出るまで無反応に見える区間の
+                       つなぎとして使う）
+- segment_added:      文字起こしセグメントが1件追加、または既存区間の話者が
+                       確定して更新された（区間確定時は speaker=None で即
+                       DB 保存・配信され、リロード後も直前までの内容が残る。
+                       話者識別完了後、同じ id で speaker 入りが再配信される）
 - summary_progress:   要約の生成途中テキスト（累積）
 """
 
@@ -36,6 +43,14 @@ _DROP_WARN_INTERVAL = 5.0
 _lock = threading.Lock()
 _subscribers: list[queue.Queue] = []
 
+# アプリ終了時に SSE ジェネレータを能動的に終了させるためのフラグ。
+# これが無いと sse_stream は while True でブロックし続け、ブラウザ側が
+# 接続を閉じるまで uvicorn のグレースフルシャットダウンが完了しない。
+_shutdown = threading.Event()
+
+# sse_stream が shutdown フラグをポーリングする間隔（秒）。
+_SHUTDOWN_POLL_SEC = 1.0
+
 _drop_lock = threading.Lock()
 _dropped_since_warn = 0
 _last_drop_warn = 0.0
@@ -57,6 +72,11 @@ def _note_drop(event_type: str | None) -> None:
         count,
         event_type,
     )
+
+
+def shutdown() -> None:
+    """全ての sse_stream ジェネレータへ終了を通知する（アプリ終了時に呼ぶ）。"""
+    _shutdown.set()
 
 
 def publish(event: dict) -> None:
@@ -83,11 +103,15 @@ def sse_stream() -> Iterator[str]:
         _subscribers.append(q)
     try:
         yield ": connected\n\n"
-        while True:
+        last_keepalive = time.monotonic()
+        while not _shutdown.is_set():
             try:
-                event = q.get(timeout=KEEPALIVE_SEC)
+                event = q.get(timeout=_SHUTDOWN_POLL_SEC)
             except queue.Empty:
-                yield ": keepalive\n\n"
+                now = time.monotonic()
+                if now - last_keepalive >= KEEPALIVE_SEC:
+                    last_keepalive = now
+                    yield ": keepalive\n\n"
                 continue
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     finally:

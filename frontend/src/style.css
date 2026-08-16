@@ -208,6 +208,15 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
    共通パーツ
    ============================================================ */
 
+.detail-page-top {
+  position: sticky;
+  top: var(--nav-height);
+  z-index: 90;
+  background-color: var(--paper);
+  padding-top: var(--space-4);
+  margin-top: calc(var(--space-4) * -1);
+}
+
 .page-header {
   display: flex;
   align-items: flex-start;
@@ -495,6 +504,22 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
 }
 
 .summary-text { white-space: pre-wrap; color: var(--ink); }
+
+/* ---- 処理段階の状況表示（ローカル文字起こし・話者識別など） ---- */
+.stage-progress-text {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  color: var(--mist);
+  font-size: 13px;
+}
+.stage-progress-text .loading-spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  flex-shrink: 0;
+}
 
 .summary-markdown {
   color: var(--ink);
