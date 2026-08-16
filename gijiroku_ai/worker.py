@@ -193,19 +193,38 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             {"type": "stage_progress", "recording_id": public_id, "text": text}
         )
 
-    def on_partial_segment(start: float, end: float, text: str) -> None:
-        """文字起こし途中の1区間を配信する（話者ラベルはまだ未確定）。
+    # start_sec → DB 上の id。話者識別完了後、対応する区間の speaker を
+    # UPDATE するために使う（同じ子プロセス出力由来なので start_sec が一致する）。
+    partial_seg_ids: dict[float, int] = {}
 
-        DB へは全区間の確定後にまとめて保存するため、ここでは表示専用の
-        イベントとして流すだけにする。
+    def on_partial_segment(start: float, end: float, text: str) -> None:
+        """文字起こしが1区間確定するたびに、話者ラベル未確定のまま即 DB へ保存する。
+
+        リロード時にも直前までの文字起こし内容が見えるよう、話者識別の完了を
+        待たずに保存する。話者が確定したら同じ id で segment_added を再配信し、
+        フロント側で該当区間を更新させる。
         """
+        with get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO transcript_segments "
+                "(recording_id, start_sec, end_sec, text, speaker) "
+                "VALUES (?, ?, ?, ?, NULL)",
+                (recording_id, start, end, text),
+            )
+            seg_id = cur.lastrowid
+            assert seg_id is not None
+        partial_seg_ids[start] = seg_id
         events.publish(
             {
-                "type": "partial_segment",
+                "type": "segment_added",
                 "recording_id": public_id,
-                "start_sec": start,
-                "end_sec": end,
-                "text": text,
+                "segment": {
+                    "id": seg_id,
+                    "start_sec": start,
+                    "end_sec": end,
+                    "speaker": None,
+                    "text": text,
+                },
             }
         )
 
@@ -214,7 +233,7 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             return recording_id in _cancelled
 
     # Stage 1: ローカル文字起こし＋話者識別（長時間音声だと数分〜十数分かかる。
-    # 子プロセスで実行し、進捗を stage_progress / partial_segment で中継しつつ、
+    # 子プロセスで実行し、進捗を stage_progress / segment_added で中継しつつ、
     # 中断要求が来たら子プロセスごと終了させる）
     _raise_if_cancelled(recording_id)
     try:
@@ -232,22 +251,32 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
     duration = segments[-1].end_sec if segments else 0.0
     with get_conn() as conn:
         conn.execute(
-            "DELETE FROM transcript_segments WHERE recording_id = ?", (recording_id,)
-        )
-        conn.execute(
             "UPDATE recordings SET duration_sec = ? WHERE id = ?",
             (duration, recording_id),
         )
+
+    # 話者識別が確定した区間だけ speaker を UPDATE し、フロントへ再配信する
+    # （id は on_partial_segment で保存済みの行を start_sec で引き当てる。
+    # 万一対応が取れない区間があれば、取りこぼし防止のため新規に挿入する）。
     for seg in segments:
         _raise_if_cancelled(recording_id)
+        seg_id = partial_seg_ids.get(seg.start_sec)
         with get_conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO transcript_segments "
-                "(recording_id, start_sec, end_sec, text, speaker) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (recording_id, seg.start_sec, seg.end_sec, seg.text, seg.speaker),
-            )
-            seg_id = cur.lastrowid
+            if seg_id is None:
+                cur = conn.execute(
+                    "INSERT INTO transcript_segments "
+                    "(recording_id, start_sec, end_sec, text, speaker) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (recording_id, seg.start_sec, seg.end_sec, seg.text, seg.speaker),
+                )
+                seg_id = cur.lastrowid
+            elif seg.speaker is not None:
+                conn.execute(
+                    "UPDATE transcript_segments SET speaker = ? WHERE id = ?",
+                    (seg.speaker, seg_id),
+                )
+            else:
+                continue
         events.publish(
             {
                 "type": "segment_added",

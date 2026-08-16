@@ -622,13 +622,6 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; }
 
 .segment-text { color: var(--ink); }
 
-/* 文字起こしの途中経過（未確定・話者ラベル無し）。確定分と区別するため淡く表示 */
-.segment-live {
-  cursor: default;
-  opacity: 0.7;
-}
-.segment-live:hover { background-color: transparent; }
-
 .transcribing-indicator {
   display: flex;
   align-items: center;

@@ -45,13 +45,6 @@ function formatDatetime(dt: string): string {
   })
 }
 
-/** 文字起こし途中の1区間（SSE の partial_segment）。DB 未保存のため id が無い */
-interface PartialSegment {
-  start_sec: number
-  end_sec: number
-  text: string
-}
-
 interface ToastState {
   message: string
   type: 'info' | 'error' | 'success'
@@ -72,8 +65,6 @@ export function RecordingDetail() {
   // SSE から受信した処理段階のテキスト（ローカル文字起こし・話者識別など、
   // segment_added / summary_progress が出るまでの間の状況表示用）
   const [stageText, setStageText] = useState<string | null>(null)
-  // 文字起こしの途中経過（DB 未保存・話者ラベル未確定。処理中のみ表示）
-  const [liveSegments, setLiveSegments] = useState<PartialSegment[]>([])
   // 現在再生中のセグメント id
   const [activeSegId, setActiveSegId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -120,25 +111,21 @@ export function RecordingDetail() {
         void loadRef.current()
         if (event.process_status === 'processing') {
           setStageText(null)
-          setLiveSegments([])
         } else {
           setSummaryProgress(null)
           setStageText(null)
-          setLiveSegments([])
         }
       } else if (event.type === 'stage_progress' && event.recording_id === recordingId) {
         setStageText(event.text)
-      } else if (event.type === 'partial_segment' && event.recording_id === recordingId) {
-        setLiveSegments((prev) => [
-          ...prev,
-          { start_sec: event.start_sec, end_sec: event.end_sec, text: event.text },
-        ])
       } else if (event.type === 'segment_added' && event.recording_id === recordingId) {
         setDetail((prev) => {
           if (!prev) return prev
           const seg = event.segment as Segment
-          if (prev.segments.some((s) => s.id === seg.id)) return prev
-          return { ...prev, segments: [...prev.segments, seg] }
+          const idx = prev.segments.findIndex((s) => s.id === seg.id)
+          if (idx === -1) return { ...prev, segments: [...prev.segments, seg] }
+          const segments = [...prev.segments]
+          segments[idx] = seg
+          return { ...prev, segments }
         })
       } else if (event.type === 'summary_progress' && event.recording_id === recordingId) {
         setSummaryProgress(event.text)
@@ -365,14 +352,6 @@ export function RecordingDetail() {
               >
                 <span className="segment-time">{formatTimestamp(seg.start_sec)}</span>
                 {seg.speaker && <span className="segment-speaker">{seg.speaker}</span>}
-                <span className="segment-text">{seg.text}</span>
-              </div>
-            ))}
-            {/* 文字起こしの途中経過（確定前・話者ラベル未確定）。
-                確定するとサーバ側で DB に保存され、上の segments として並び直す */}
-            {isProcessing && liveSegments.map((seg, i) => (
-              <div key={`live-${i}`} className="segment segment-live">
-                <span className="segment-time">{formatTimestamp(seg.start_sec)}</span>
                 <span className="segment-text">{seg.text}</span>
               </div>
             ))}
