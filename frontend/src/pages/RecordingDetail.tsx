@@ -55,6 +55,9 @@ export function RecordingDetail() {
   const { confirm, modal } = useConfirm()
   // SSE から受信した要約の累積テキスト（要約中のみ表示）
   const [summaryProgress, setSummaryProgress] = useState<string | null>(null)
+  // SSE から受信した処理段階のテキスト（ローカル文字起こし・話者識別など、
+  // segment_added / summary_progress が出るまでの間の状況表示用）
+  const [stageText, setStageText] = useState<string | null>(null)
   // 現在再生中のセグメント id
   const [activeSegId, setActiveSegId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -88,9 +91,14 @@ export function RecordingDetail() {
           prev ? { ...prev, process_status: event.process_status } : prev,
         )
         void loadRef.current()
-        if (event.process_status !== 'processing') {
+        if (event.process_status === 'processing') {
+          setStageText(null)
+        } else {
           setSummaryProgress(null)
+          setStageText(null)
         }
+      } else if (event.type === 'stage_progress' && event.recording_id === recordingId) {
+        setStageText(event.text)
       } else if (event.type === 'segment_added' && event.recording_id === recordingId) {
         setDetail((prev) => {
           if (!prev) return prev
@@ -100,6 +108,7 @@ export function RecordingDetail() {
         })
       } else if (event.type === 'summary_progress' && event.recording_id === recordingId) {
         setSummaryProgress(event.text)
+        setStageText(null)
       }
     })
     return unsubscribe
@@ -204,6 +213,13 @@ export function RecordingDetail() {
         <div className="error-box">
           <strong>エラー:</strong> {detail.error_message}
         </div>
+      )}
+
+      {isProcessing && stageText && (
+        <p className="stage-progress-text">
+          <span className="loading-spinner" aria-hidden />
+          {stageText}
+        </p>
       )}
 
       <audio

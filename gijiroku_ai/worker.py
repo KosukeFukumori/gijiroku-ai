@@ -186,11 +186,20 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
     2. 話者ラベル付きトランスクリプトを Gemini に渡して議事録生成 → 保存
     """
     local_path = storage.path_for(stored_filename)
+    logger.info("処理開始: %s", public_id)
 
-    # Stage 1: ローカル文字起こし＋話者識別
+    def on_stage(text: str) -> None:
+        _raise_if_cancelled(recording_id)
+        events.publish(
+            {"type": "stage_progress", "recording_id": public_id, "text": text}
+        )
+
+    # Stage 1: ローカル文字起こし＋話者識別（長時間音声だと数分〜十数分かかり、
+    # その間は segment_added が出せないため stage_progress でつなぐ）
     _raise_if_cancelled(recording_id)
-    segments = transcribe.transcribe(local_path)
+    segments = transcribe.transcribe(local_path, on_stage=on_stage)
     _raise_if_cancelled(recording_id)
+    logger.info("文字起こし完了: %s（%d区間）", public_id, len(segments))
 
     duration = segments[-1].end_sec if segments else 0.0
     with get_conn() as conn:
@@ -239,6 +248,13 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             {"type": "summary_progress", "recording_id": public_id, "text": text}
         )
 
+    events.publish(
+        {
+            "type": "stage_progress",
+            "recording_id": public_id,
+            "text": "議事録を生成しています（Gemini）",
+        }
+    )
     transcript_text = transcribe.to_transcript_text(segments)
     result = gemini.generate_minutes(transcript_text, on_partial=on_partial)
 

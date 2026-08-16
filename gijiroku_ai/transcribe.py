@@ -19,6 +19,8 @@ HuggingFace 上での規約同意とアクセストークン（HF_TOKEN）が必
 import logging
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,11 +104,6 @@ def _load_diarizer() -> Any | None:
 
     token = settings.effective_hf_token()
     if not token:
-        logger.warning(
-            "HF_TOKEN が未設定のため話者識別をスキップします"
-            "（文字起こしのみ実行）。pyannote の利用には HuggingFace の"
-            "規約同意とトークンが必要です。"
-        )
         _diarize_unavailable = True
         return None
 
@@ -174,15 +171,44 @@ def _relabel_speakers(
     return segments
 
 
-def transcribe(audio_path: Path) -> list[TranscriptSegment]:
+def transcribe(
+    audio_path: Path,
+    on_stage: Callable[[str], None] | None = None,
+) -> list[TranscriptSegment]:
     """音声ファイルを文字起こしし、話者ラベル付きセグメントを返す。
 
     話者識別が使えない環境（HF_TOKEN 無し等）では speaker=None のまま返す。
+    長時間音声だと文字起こし・話者識別それぞれに数分〜十数分かかり、その間は
+    セグメント単位の進捗を出せない（mlx-whisper / pyannote とも結果が出るまで
+    まとまった処理のため）。on_stage を渡すと、せめて「今どの段階か」を
+    都度通知できる（SSE 経由でブラウザへ表示する用途を想定）。
     """
+    def stage(text: str) -> None:
+        logger.info(text)
+        if on_stage is not None:
+            on_stage(text)
+
     wav_path = _to_wav16k_mono(audio_path)
     try:
+        stage(f"文字起こしを開始します（モデル: {settings.effective_whisper_model()}）")
+        t0 = time.monotonic()
         whisper_segments = _transcribe_words(wav_path)
-        turns = _diarize(wav_path)
+        stage(
+            f"文字起こしが完了しました（{len(whisper_segments)}区間、"
+            f"{time.monotonic() - t0:.0f}秒）"
+        )
+
+        if settings.effective_hf_token():
+            stage("話者識別を開始します")
+            t0 = time.monotonic()
+            turns = _diarize(wav_path)
+            if _diarize_unavailable:
+                stage("話者識別に失敗したためスキップします（文字起こしのみ実行）")
+            else:
+                stage(f"話者識別が完了しました（{time.monotonic() - t0:.0f}秒）")
+        else:
+            stage("HF_TOKEN が未設定のため話者識別をスキップします")
+            turns = []
     finally:
         wav_path.unlink(missing_ok=True)
 
