@@ -1,5 +1,6 @@
 // 録音ファイルのドラッグ&ドロップ / ファイル選択アップロード領域（複数ファイル対応）
 import { useRef, useState } from 'react'
+import { IconUpload } from './Icon'
 
 interface Props {
   onUpload: (files: File[]) => Promise<void>
@@ -56,13 +57,15 @@ export function UploadDropzone({ onUpload, disabled = false }: Props) {
         onChange={handleInputChange}
         disabled={busy}
       />
-      <div className="dropzone-icon" aria-hidden>{uploading ? '⏳' : '🎙️'}</div>
+      <div className="dropzone-icon" aria-hidden>
+        {uploading ? <span className="loading-spinner" /> : <IconUpload size={20} />}
+      </div>
       <p className="dropzone-title">
-        {uploading ? 'アップロード中...' : '録音ファイルをドラッグ&ドロップ'}
+        {uploading ? 'アップロード中' : '録音ファイルをドロップ'}
       </p>
       {!uploading && (
         <p className="dropzone-desc">
-          またはクリックしてファイルを選択（複数選択可、m4a, mp3, wav, aac, amr, ogg, flac）
+          クリックしてファイルを選ぶこともできます（複数可 / m4a, mp3, wav, aac, amr, ogg, flac）
         </p>
       )}
     </div>

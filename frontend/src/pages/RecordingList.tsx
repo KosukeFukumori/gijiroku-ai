@@ -6,6 +6,7 @@ import type { RecordingListItem } from '../types'
 import { ProcessBadge } from '../components/Badge'
 import { Toast } from '../components/Toast'
 import { UploadDropzone } from '../components/UploadDropzone'
+import { IconArrowUpRight, IconMic } from '../components/Icon'
 
 /** 秒数を mm:ss 形式に変換（duration_sec は float なので整数へ丸める） */
 function formatDuration(sec: number | null): string {
@@ -14,6 +15,17 @@ function formatDuration(sec: number | null): string {
   const m = Math.floor(total / 60)
   const s = total % 60
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+/** 要約の冒頭を一行プレビュー用に整える（Markdown 記法を落とす） */
+function toPlainPreview(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/\*\*|__|`|~~/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** 会議日時を読みやすい文字列に変換 */
@@ -103,7 +115,12 @@ export function RecordingList() {
       )}
 
       <div className="page-header">
-        <h1 className="page-title">録音一覧</h1>
+        <div className="page-header-left">
+          <h1 className="page-title">録音</h1>
+          <p className="page-lead">
+            {items.length > 0 ? `${items.length}件の録音` : '会議の録音を追加すると、文字起こしと議事録を自動で作ります'}
+          </p>
+        </div>
       </div>
 
       <UploadDropzone onUpload={handleUpload} />
@@ -118,9 +135,9 @@ export function RecordingList() {
       <div className="recording-list">
         {items.length === 0 && !loading && (
           <div className="empty-state">
-            <div className="empty-state-icon" aria-hidden>🎙️</div>
-            <p className="empty-state-title">録音がありません</p>
-            <p className="empty-state-desc">上の領域から会議の録音ファイルをアップロードしてください</p>
+            <div className="empty-state-icon" aria-hidden><IconMic size={28} /></div>
+            <p className="empty-state-title">まだ録音がありません</p>
+            <p className="empty-state-desc">上の枠に録音ファイルをドロップすると、処理が始まります</p>
           </div>
         )}
         {items.map((item) => (
@@ -130,8 +147,9 @@ export function RecordingList() {
             onClick={() => navigate(`/recordings/${item.id}`)}
           >
             <div className="recording-card-header">
-              <span className="recording-title">{item.title ?? '(タイトル未生成)'}</span>
+              <span className="recording-title">{item.title ?? 'タイトルは生成中です'}</span>
               <ProcessBadge status={item.process_status} />
+              <IconArrowUpRight size={16} className="recording-card-arrow" />
             </div>
             <div className="recording-card-meta">
               <span>
@@ -144,7 +162,7 @@ export function RecordingList() {
               </span>
             </div>
             {item.summary_head && (
-              <p className="recording-summary-head">{item.summary_head}</p>
+              <p className="recording-summary-head">{toPlainPreview(item.summary_head)}</p>
             )}
           </div>
         ))}
