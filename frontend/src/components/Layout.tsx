@@ -1,18 +1,38 @@
-// 共通レイアウト: スティッキーナビ付きのページ外枠
-import { Link, Outlet } from 'react-router-dom'
+// 共通レイアウト: 画面上部に浮かぶピル型ナビ + コンテンツ領域
+import { Link, Outlet, useLocation } from 'react-router-dom'
+import { ThemeToggle } from './ThemeToggle'
 
 export function Layout() {
+  const { pathname } = useLocation()
+
   return (
     <div className="layout">
-      <header className="nav-header">
-        <Link to="/" className="nav-brand">
-          <span className="nav-seal" aria-hidden>議</span>
+      <header className="nav">
+        <Link to="/" className="nav-brand bevel">
+          <span className="nav-seal" aria-hidden>
+            議
+          </span>
           <span className="nav-brand-name">議事録AI</span>
         </Link>
-        <Link to="/settings" className="nav-settings-link" aria-label="設定" title="設定">
-          ⚙️
-        </Link>
+
+        <nav className="nav-menu bevel">
+          <Link to="/" className={`nav-link${pathname === '/' ? ' nav-link--active' : ''}`}>
+            録音
+          </Link>
+          <span className="nav-divider" aria-hidden />
+          <Link
+            to="/settings"
+            className={`nav-link${pathname === '/settings' ? ' nav-link--active' : ''}`}
+          >
+            設定
+          </Link>
+        </nav>
+
+        <div className="nav-tools">
+          <ThemeToggle />
+        </div>
       </header>
+
       <main className="main-content">
         <Outlet />
       </main>

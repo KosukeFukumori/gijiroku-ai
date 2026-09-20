@@ -16,6 +16,7 @@ import type { RecordingDetail as RecordingDetailType, Segment } from '../types'
 import { ProcessBadge } from '../components/Badge'
 import { Toast } from '../components/Toast'
 import { useConfirm } from '../components/ConfirmModal'
+import { IconArrowLeft } from '../components/Icon'
 
 type Tab = 'transcript' | 'minutes'
 
@@ -240,7 +241,8 @@ export function RecordingDetail() {
       <div className="page-header">
         <div className="page-header-left">
           <button className="btn btn-ghost btn-sm detail-back" onClick={() => navigate('/')}>
-            ← 一覧に戻る
+            <IconArrowLeft size={14} />
+            録音一覧
           </button>
           <h1 className="page-title">{detail.title ?? detail.original_filename}</h1>
           <div className="detail-meta">
@@ -322,7 +324,6 @@ export function RecordingDetail() {
         <div>
           {showSummary && (
             <div className="section">
-              <h2 className="section-title">議事録</h2>
               {isProcessing && detail.summary === null ? (
                 <p className="summary-text">
                   {summaryProgress ?? ''}
