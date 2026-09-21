@@ -12,11 +12,17 @@ import {
   retryRecording,
   subscribeEvents,
 } from '../api'
-import type { RecordingDetail as RecordingDetailType, Segment } from '../types'
+import type {
+  ProcessStep,
+  RecordingDetail as RecordingDetailType,
+  Segment,
+} from '../types'
 import { ProcessBadge } from '../components/Badge'
 import { Toast } from '../components/Toast'
 import { useConfirm } from '../components/ConfirmModal'
 import { IconArrowLeft } from '../components/Icon'
+import { StageTrack } from '../components/StageTrack'
+import { ScrollProgress, type ScrollSection } from '../components/ScrollProgress'
 
 type Tab = 'transcript' | 'minutes'
 
@@ -67,6 +73,11 @@ export function RecordingDetail() {
   // SSE から受信した処理段階のテキスト（ローカル文字起こし・話者識別など、
   // segment_added / summary_progress が出るまでの間の状況表示用）
   const [stageText, setStageText] = useState<string | null>(null)
+  // SSE から受信した処理段階の識別子（段階トラックの現在位置）
+  const [stageStep, setStageStep] = useState<ProcessStep | null>(null)
+  // 読み進みピルに出す見出し（タブごとに作り直す）
+  const [sections, setSections] = useState<ScrollSection[]>([])
+  const markdownRef = useRef<HTMLDivElement | null>(null)
   // 現在再生中のセグメント id
   const [activeSegId, setActiveSegId] = useState<number | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -113,12 +124,15 @@ export function RecordingDetail() {
         void loadRef.current()
         if (event.process_status === 'processing') {
           setStageText(null)
+          setStageStep(null)
         } else {
           setSummaryProgress(null)
           setStageText(null)
+          setStageStep(null)
         }
       } else if (event.type === 'stage_progress' && event.recording_id === recordingId) {
         setStageText(event.text)
+        setStageStep(event.step)
       } else if (event.type === 'segment_added' && event.recording_id === recordingId) {
         setDetail((prev) => {
           if (!prev) return prev
@@ -132,10 +146,58 @@ export function RecordingDetail() {
       } else if (event.type === 'summary_progress' && event.recording_id === recordingId) {
         setSummaryProgress(event.text)
         setStageText(null)
+        setStageStep('minutes')
       }
     })
     return unsubscribe
   }, [recordingId])
+
+  // 議事録タブ: 描画済みの Markdown から見出しを拾って飛び先にする
+  useEffect(() => {
+    if (tab !== 'minutes') return
+    const root = markdownRef.current
+    if (!root) {
+      setSections([])
+      return
+    }
+    const heads = Array.from(root.querySelectorAll('h1, h2, h3'))
+    const depths = heads.map((el) => Number(el.tagName.slice(1)))
+    const top = depths.length > 0 ? Math.min(...depths) : 1
+    setSections(
+      heads.map((el, i) => {
+        const id = `minutes-sec-${i}`
+        el.id = id
+        return {
+          id,
+          label: el.textContent?.trim() || `見出し ${i + 1}`,
+          depth: depths[i] - top + 1,
+        }
+      }),
+    )
+  }, [tab, detail?.summary])
+
+  // 文字起こしタブ: 一定間隔の時間帯を飛び先にする（長い会議ほど間隔を広く）
+  useEffect(() => {
+    if (tab !== 'transcript') return
+    const segments = detail?.segments ?? []
+    if (segments.length === 0) {
+      setSections([])
+      return
+    }
+    // 並び順に依存しないよう最大値を取る。飛び先が多すぎても選びにくいので、
+    // 12個前後に収まる分刻みにする。
+    const total = segments.reduce((max, seg) => Math.max(max, seg.start_sec), 0)
+    const bucketSec = Math.max(60, Math.ceil(total / 12 / 60) * 60)
+    const seen = new Set<number>()
+    const list: ScrollSection[] = []
+    for (const seg of segments) {
+      const bucket = Math.floor(seg.start_sec / bucketSec)
+      if (seen.has(bucket)) continue
+      seen.add(bucket)
+      list.push({ id: `seg-${seg.id}`, label: formatTimestamp(bucket * bucketSec) })
+    }
+    setSections(list)
+  }, [tab, detail?.segments])
 
   // timeupdate イベントで現在再生中のセグメントをハイライト
   const handleTimeUpdate = () => {
@@ -237,7 +299,6 @@ export function RecordingDetail() {
       )}
       {modal}
 
-      <div className="detail-page-top">
       <div className="page-header">
         <div className="page-header-left">
           <button className="btn btn-ghost btn-sm detail-back" onClick={() => navigate('/')}>
@@ -285,39 +346,35 @@ export function RecordingDetail() {
         </div>
       )}
 
-      {isProcessing && stageText && (
-        <p className="stage-progress-text">
-          <span className="loading-spinner" aria-hidden />
-          {stageText}
-        </p>
-      )}
+      {isProcessing && <StageTrack active={stageStep} text={stageText} />}
 
-      <audio
-        ref={audioRef}
-        controls
-        src={audioUrl(recordingId)}
-        onTimeUpdate={handleTimeUpdate}
-        className="audio-player"
-      />
+      <div className="detail-toolbar">
+        <div className="tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={tab === 'minutes'}
+            className={`tab-btn${tab === 'minutes' ? ' tab-btn--active' : ''}`}
+            onClick={() => setTab('minutes')}
+          >
+            議事録
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'transcript'}
+            className={`tab-btn${tab === 'transcript' ? ' tab-btn--active' : ''}`}
+            onClick={() => setTab('transcript')}
+          >
+            文字起こし
+          </button>
+        </div>
 
-      <div className="tabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={tab === 'minutes'}
-          className={`tab-btn${tab === 'minutes' ? ' tab-btn--active' : ''}`}
-          onClick={() => setTab('minutes')}
-        >
-          議事録
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'transcript'}
-          className={`tab-btn${tab === 'transcript' ? ' tab-btn--active' : ''}`}
-          onClick={() => setTab('transcript')}
-        >
-          文字起こし
-        </button>
-      </div>
+        <audio
+          ref={audioRef}
+          controls
+          src={audioUrl(recordingId)}
+          onTimeUpdate={handleTimeUpdate}
+          className="audio-player"
+        />
       </div>
 
       {tab === 'minutes' && (
@@ -330,7 +387,7 @@ export function RecordingDetail() {
                   <span className="streaming-cursor" aria-hidden>▍</span>
                 </p>
               ) : (
-                <div className="summary-markdown">
+                <div className="summary-markdown" ref={markdownRef}>
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.summary}</ReactMarkdown>
                 </div>
               )}
@@ -365,12 +422,15 @@ export function RecordingDetail() {
         </div>
       )}
 
+      <ScrollProgress key={tab} sections={sections} />
+
       {tab === 'transcript' && (
         <div className="section">
           <div className="segments">
             {detail.segments.map((seg) => (
               <div
                 key={seg.id}
+                id={`seg-${seg.id}`}
                 className={`segment${activeSegId === seg.id ? ' segment-active' : ''}`}
                 onClick={() => handleSegmentClick(seg.start_sec)}
                 title="クリックでこの位置から再生"

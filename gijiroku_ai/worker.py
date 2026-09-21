@@ -25,6 +25,9 @@ from gijiroku_ai import events, gemini, storage, transcribe
 from gijiroku_ai.db import get_conn
 from gijiroku_ai.timeutil import now_iso
 
+# 議事録生成の段階識別子（文字起こし・話者識別の分は transcribe_worker 側で付く）
+STEP_MINUTES = "minutes"
+
 logger = logging.getLogger(__name__)
 
 MAX_RETRY = 2
@@ -133,7 +136,11 @@ def _set_status(
             (status, error, now_iso(), recording_id),
         )
     events.publish(
-        {"type": "recording_updated", "recording_id": public_id, "process_status": status}
+        {
+            "type": "recording_updated",
+            "recording_id": public_id,
+            "process_status": status,
+        }
     )
 
 
@@ -152,7 +159,9 @@ def _fail(recording_id: int, public_id: str, exc: Exception) -> None:
     logger.exception("処理失敗: %s", public_id)
     with _active_lock:
         if recording_id in _cancelled:
-            logger.info("中断要求済みのため失敗ステータスの書き込みをスキップ: %s", public_id)
+            logger.info(
+                "中断要求済みのため失敗ステータスの書き込みをスキップ: %s", public_id
+            )
             return
         with get_conn() as conn:
             row = conn.execute(
@@ -172,10 +181,17 @@ def _fail(recording_id: int, public_id: str, exc: Exception) -> None:
         _defer(recording_id, delay)
         logger.info(
             "リトライ %d/%d 回目を %.0f 秒後に予約: %s",
-            retry, MAX_RETRY, delay, public_id,
+            retry,
+            MAX_RETRY,
+            delay,
+            public_id,
         )
     events.publish(
-        {"type": "recording_updated", "recording_id": public_id, "process_status": status}
+        {
+            "type": "recording_updated",
+            "recording_id": public_id,
+            "process_status": status,
+        }
     )
 
 
@@ -188,9 +204,14 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
     local_path = storage.path_for(stored_filename)
     logger.info("処理開始: %s", public_id)
 
-    def on_stage(text: str) -> None:
+    def on_stage(text: str, step: str) -> None:
         events.publish(
-            {"type": "stage_progress", "recording_id": public_id, "text": text}
+            {
+                "type": "stage_progress",
+                "recording_id": public_id,
+                "text": text,
+                "step": step,
+            }
         )
 
     # 確定順に並んだ DB 上の id。話者識別完了後、最終結果の区間と出現順で
@@ -323,6 +344,7 @@ def _process_stage(recording_id: int, public_id: str, stored_filename: str) -> N
             "type": "stage_progress",
             "recording_id": public_id,
             "text": "議事録を生成しています（Gemini）",
+            "step": STEP_MINUTES,
         }
     )
     transcript_text = transcribe.to_transcript_text(segments)
@@ -393,9 +415,14 @@ def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) ->
     """既存の文字起こし区間はそのまま、話者識別だけをやり直して speaker を更新する。"""
     local_path = storage.path_for(stored_filename)
 
-    def on_stage(text: str) -> None:
+    def on_stage(text: str, step: str) -> None:
         events.publish(
-            {"type": "stage_progress", "recording_id": public_id, "text": text}
+            {
+                "type": "stage_progress",
+                "recording_id": public_id,
+                "text": text,
+                "step": step,
+            }
         )
 
     def is_cancelled() -> bool:
@@ -411,7 +438,9 @@ def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) ->
 
     _raise_if_cancelled(recording_id)
     try:
-        turns = transcribe.diarize(local_path, on_stage=on_stage, should_cancel=is_cancelled)
+        turns = transcribe.diarize(
+            local_path, on_stage=on_stage, should_cancel=is_cancelled
+        )
     except transcribe.Cancelled as exc:
         raise _Cancelled from exc
     _raise_if_cancelled(recording_id)
@@ -424,7 +453,10 @@ def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) ->
 
     segments = [
         transcribe.TranscriptSegment(
-            start_sec=row["start_sec"], end_sec=row["end_sec"], text=row["text"], speaker=None
+            start_sec=row["start_sec"],
+            end_sec=row["end_sec"],
+            text=row["text"],
+            speaker=None,
         )
         for row in rows
     ]
@@ -456,7 +488,9 @@ def _rediarize_stage(recording_id: int, public_id: str, stored_filename: str) ->
     # 話者識別だけの再実行では話者ラベルが匿名（話者A 等）に戻ってしまうため、
     # ここでも初回処理と同じ話者名解決セッションを実行し、実名/役割へ戻す。
     _raise_if_cancelled(recording_id)
-    _resolve_speaker_names(recording_id, public_id, [row["id"] for row in rows], segments)
+    _resolve_speaker_names(
+        recording_id, public_id, [row["id"] for row in rows], segments
+    )
 
 
 def rediarize_job(recording_id: int, public_id: str, stored_filename: str) -> None:
@@ -472,7 +506,10 @@ def rediarize_job(recording_id: int, public_id: str, stored_filename: str) -> No
             _set_status_checked(recording_id, public_id, "done")
             logger.info("話者識別の再実行が完了: %s", public_id)
         except _Cancelled:
-            logger.info("中断要求により話者識別の再実行を打ち切り（状態は要求元が設定）: %s", public_id)
+            logger.info(
+                "中断要求により話者識別の再実行を打ち切り（状態は要求元が設定）: %s",
+                public_id,
+            )
         except Exception as exc:
             logger.exception("話者識別の再実行に失敗: %s", public_id)
             with _active_lock:
@@ -503,7 +540,9 @@ def process_job(recording_id: int, public_id: str, stored_filename: str) -> None
             _set_status_checked(recording_id, public_id, "done")
             logger.info("処理完了: %s", public_id)
         except _Cancelled:
-            logger.info("中断要求により処理を打ち切り（状態は要求元が設定）: %s", public_id)
+            logger.info(
+                "中断要求により処理を打ち切り（状態は要求元が設定）: %s", public_id
+            )
         except Exception as exc:  # noqa: BLE001 - 想定外の例外も retry/error 記録に回す
             _fail(recording_id, public_id, exc)
 
