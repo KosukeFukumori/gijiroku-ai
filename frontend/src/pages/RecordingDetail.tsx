@@ -237,7 +237,6 @@ export function RecordingDetail() {
       )}
       {modal}
 
-      <div className="detail-page-top">
       <div className="page-header">
         <div className="page-header-left">
           <button className="btn btn-ghost btn-sm detail-back" onClick={() => navigate('/')}>
@@ -292,32 +291,33 @@ export function RecordingDetail() {
         </p>
       )}
 
-      <audio
-        ref={audioRef}
-        controls
-        src={audioUrl(recordingId)}
-        onTimeUpdate={handleTimeUpdate}
-        className="audio-player"
-      />
+      <div className="detail-toolbar">
+        <div className="tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={tab === 'minutes'}
+            className={`tab-btn${tab === 'minutes' ? ' tab-btn--active' : ''}`}
+            onClick={() => setTab('minutes')}
+          >
+            議事録
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'transcript'}
+            className={`tab-btn${tab === 'transcript' ? ' tab-btn--active' : ''}`}
+            onClick={() => setTab('transcript')}
+          >
+            文字起こし
+          </button>
+        </div>
 
-      <div className="tabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={tab === 'minutes'}
-          className={`tab-btn${tab === 'minutes' ? ' tab-btn--active' : ''}`}
-          onClick={() => setTab('minutes')}
-        >
-          議事録
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'transcript'}
-          className={`tab-btn${tab === 'transcript' ? ' tab-btn--active' : ''}`}
-          onClick={() => setTab('transcript')}
-        >
-          文字起こし
-        </button>
-      </div>
+        <audio
+          ref={audioRef}
+          controls
+          src={audioUrl(recordingId)}
+          onTimeUpdate={handleTimeUpdate}
+          className="audio-player"
+        />
       </div>
 
       {tab === 'minutes' && (
