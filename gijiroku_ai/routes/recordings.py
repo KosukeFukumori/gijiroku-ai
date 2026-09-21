@@ -5,11 +5,12 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from gijiroku_ai import audio, events, storage, worker
+from gijiroku_ai import audio, events, pdf_export, storage, worker
 from gijiroku_ai.db import get_conn, new_public_id
 from gijiroku_ai.models import (
     RecordingDetail,
@@ -50,7 +51,9 @@ async def upload_recording(
         raise HTTPException(400, f"対応していない拡張子です（対応: {allowed}）")
 
     public_id = new_public_id()
-    stored_filename, size = storage.save_upload(public_id, file.filename or "recording", file.file)
+    stored_filename, size = storage.save_upload(
+        public_id, file.filename or "recording", file.file
+    )
 
     meeting_datetime = now_iso()
     if file_modified_at:
@@ -98,9 +101,7 @@ def list_recordings(
         params.extend(statuses)
     if q.strip():
         query = q.strip()
-        escaped = (
-            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        )
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         like = f"%{escaped}%"
         where.append(
             "(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' "
@@ -175,6 +176,43 @@ def get_audio(public_id: str) -> Response:
     return audio.audio_response(local_path)
 
 
+def _pdf_response(data: bytes, filename: str) -> Response:
+    """PDF をダウンロードとして返す。
+
+    日本語ファイル名はそのままでは Content-Disposition に載せられないため、
+    RFC 5987 の `filename*`（UTF-8 パーセントエンコード）で渡す。
+    """
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+@router.get("/recordings/{public_id}/export/minutes.pdf")
+def export_minutes_pdf(public_id: str) -> Response:
+    """議事録（本文・決定事項・アクションアイテム）を PDF で返す。"""
+    detail = get_recording(public_id)
+    if detail.summary is None:
+        raise HTTPException(409, "議事録がまだ生成されていません")
+    data = pdf_export.build_minutes_pdf(detail)
+    name = pdf_export.safe_filename(detail.title or detail.original_filename)
+    return _pdf_response(data, f"{name}_議事録.pdf")
+
+
+@router.get("/recordings/{public_id}/export/transcript.pdf")
+def export_transcript_pdf(public_id: str) -> Response:
+    """文字起こし（時間・話者付き）を PDF で返す。"""
+    detail = get_recording(public_id)
+    if not detail.segments:
+        raise HTTPException(409, "文字起こしがまだ生成されていません")
+    data = pdf_export.build_transcript_pdf(detail)
+    name = pdf_export.safe_filename(detail.title or detail.original_filename)
+    return _pdf_response(data, f"{name}_文字起こし.pdf")
+
+
 @router.delete("/recordings/{public_id}")
 def delete_recording(public_id: str) -> dict:
     """録音を完全削除する（DBレコード・音源ファイル・文字起こしをすべて削除）。
@@ -210,7 +248,11 @@ def cancel_recording(public_id: str) -> dict:
         )
     worker.clear_defer(row["id"])
     events.publish(
-        {"type": "recording_updated", "recording_id": public_id, "process_status": "error"}
+        {
+            "type": "recording_updated",
+            "recording_id": public_id,
+            "process_status": "error",
+        }
     )
     return {"ok": True}
 
@@ -239,7 +281,11 @@ def rediarize_recording(public_id: str) -> dict:
             (now_iso(), row["id"]),
         )
     events.publish(
-        {"type": "recording_updated", "recording_id": public_id, "process_status": "processing"}
+        {
+            "type": "recording_updated",
+            "recording_id": public_id,
+            "process_status": "processing",
+        }
     )
     threading.Thread(
         target=worker.rediarize_job,
@@ -263,6 +309,10 @@ def retry_recording(public_id: str) -> dict:
         )
     worker.clear_defer(row["id"])
     events.publish(
-        {"type": "recording_updated", "recording_id": public_id, "process_status": "pending"}
+        {
+            "type": "recording_updated",
+            "recording_id": public_id,
+            "process_status": "pending",
+        }
     )
     return {"ok": True}

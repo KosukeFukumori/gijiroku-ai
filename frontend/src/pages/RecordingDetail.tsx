@@ -8,9 +8,11 @@ import {
   cancelRecording,
   deleteRecording,
   fetchRecording,
+  minutesPdfUrl,
   rediarizeRecording,
   retryRecording,
   subscribeEvents,
+  transcriptPdfUrl,
 } from '../api'
 import type {
   ProcessStep,
@@ -23,6 +25,7 @@ import { useConfirm } from '../components/ConfirmModal'
 import { IconArrowLeft } from '../components/Icon'
 import { StageTrack } from '../components/StageTrack'
 import { ScrollProgress, type ScrollSection } from '../components/ScrollProgress'
+import { ExportMenu } from '../components/ExportMenu'
 
 type Tab = 'transcript' | 'minutes'
 
@@ -319,6 +322,22 @@ export function RecordingDetail() {
           </div>
         </div>
         <div className="detail-actions">
+          <ExportMenu
+            items={[
+              {
+                label: '議事録をPDFで保存',
+                href: minutesPdfUrl(recordingId),
+                disabled: detail.summary === null,
+                disabledReason: '議事録がまだ生成されていません',
+              },
+              {
+                label: '文字起こしをPDFで保存',
+                href: transcriptPdfUrl(recordingId),
+                disabled: detail.segments.length === 0,
+                disabledReason: '文字起こしがまだ生成されていません',
+              },
+            ]}
+          />
           {isPending && (
             <button className="btn btn-secondary" onClick={() => { void handleCancel() }}>
               中断
