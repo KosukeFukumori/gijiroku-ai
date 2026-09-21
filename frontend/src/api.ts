@@ -49,6 +49,16 @@ export function audioUrl(id: string): string {
   return `${BASE}/recordings/${id}/audio`
 }
 
+/** 議事録 PDF のダウンロード URL */
+export function minutesPdfUrl(id: string): string {
+  return `${BASE}/recordings/${id}/export/minutes.pdf`
+}
+
+/** 文字起こし PDF のダウンロード URL */
+export function transcriptPdfUrl(id: string): string {
+  return `${BASE}/recordings/${id}/export/transcript.pdf`
+}
+
 // ============================================================
 // 録音アップロード・操作
 // ============================================================
