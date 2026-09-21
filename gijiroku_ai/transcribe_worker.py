@@ -10,7 +10,7 @@ Python レベルでは割り込めない（協調的キャンセルのチェッ�
 標準エラーをそのまま継承し、ログとしてサーバのコンソールに出す。
 
 出力するメッセージ（type フィールド）:
-- stage   : 処理段階を表す短いテキスト
+- stage   : 処理段階を表す短いテキストと、段階の識別子（step）
 - segment : 文字起こし途中の1区間（逐次表示用。話者ラベルは未確定）
 - segments: 文字起こしの最終結果（全区間。--diarize-only 指定時は出力しない）
 - turns   : 話者ダイアライゼーションの区間 [start, end, label]
@@ -46,8 +46,13 @@ def emit(message: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _stage(text: str) -> None:
-    emit({"type": "stage", "text": text})
+# 処理段階の識別子。表示側が文言に依存せず進捗を判定できるようにする。
+STEP_TRANSCRIBE = "transcribe"
+STEP_DIARIZE = "diarize"
+
+
+def _stage(text: str, step: str) -> None:
+    emit({"type": "stage", "text": text, "step": step})
 
 
 def _parse_timestamp(text: str) -> float:
@@ -101,7 +106,7 @@ def _transcribe(wav_path: Path) -> list[dict[str, Any]]:
     _install_segment_hook(importlib.import_module("mlx_whisper.transcribe"))
 
     model = settings.effective_whisper_model()
-    _stage(f"文字起こしを開始します（モデル: {model}）")
+    _stage(f"文字起こしを開始します（モデル: {model}）", STEP_TRANSCRIBE)
     started = time.monotonic()
     result: dict[str, Any] = mlx_whisper.transcribe(
         str(wav_path),
@@ -121,7 +126,8 @@ def _transcribe(wav_path: Path) -> list[dict[str, Any]]:
     ]
     _stage(
         f"文字起こしが完了しました（{len(segments)}区間、"
-        f"{time.monotonic() - started:.0f}秒）"
+        f"{time.monotonic() - started:.0f}秒）",
+        STEP_TRANSCRIBE,
     )
     return segments
 
@@ -134,10 +140,10 @@ def _diarize(wav_path: Path) -> list[list[Any]]:
     """
     token = settings.effective_hf_token()
     if not token:
-        _stage("HF_TOKEN が未設定のため話者識別をスキップします")
+        _stage("HF_TOKEN が未設定のため話者識別をスキップします", STEP_DIARIZE)
         return []
 
-    _stage("話者識別を開始します")
+    _stage("話者識別を開始します", STEP_DIARIZE)
     started = time.monotonic()
     try:
         import torch
@@ -160,14 +166,18 @@ def _diarize(wav_path: Path) -> list[list[Any]]:
         annotation: Any = getattr(output, "speaker_diarization", output)
     except Exception:  # noqa: BLE001 - 認証失敗・未同意・DL失敗は話者識別なしで続行
         traceback.print_exc()
-        _stage("話者識別に失敗したためスキップします（文字起こしのみ実行）")
+        _stage(
+            "話者識別に失敗したためスキップします（文字起こしのみ実行）", STEP_DIARIZE
+        )
         return []
 
     turns = [
         [float(turn.start), float(turn.end), str(label)]
         for turn, _, label in annotation.itertracks(yield_label=True)
     ]
-    _stage(f"話者識別が完了しました（{time.monotonic() - started:.0f}秒）")
+    _stage(
+        f"話者識別が完了しました（{time.monotonic() - started:.0f}秒）", STEP_DIARIZE
+    )
     return turns
 
 

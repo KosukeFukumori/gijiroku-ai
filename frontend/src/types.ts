@@ -64,10 +64,13 @@ export interface SettingsUpdate {
   prompt?: string
 }
 
+/** 処理段階の識別子（stage_progress イベントの step） */
+export type ProcessStep = 'transcribe' | 'diarize' | 'minutes'
+
 /** GET /api/events の SSE イベント型 */
 export type AppEvent =
   | { type: 'recordings_changed' }
   | { type: 'recording_updated'; recording_id: string; process_status: ProcessStatus }
-  | { type: 'stage_progress'; recording_id: string; text: string }
+  | { type: 'stage_progress'; recording_id: string; text: string; step: ProcessStep }
   | { type: 'segment_added'; recording_id: string; segment: Segment }
   | { type: 'summary_progress'; recording_id: string; text: string }

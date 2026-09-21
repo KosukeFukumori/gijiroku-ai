@@ -674,28 +674,166 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; color: 
 
 .summary-text { white-space: pre-wrap; color: var(--ink); }
 
-/* ---- 処理段階の状況表示 ---- */
+/* ---- 処理段階のトラック ---- */
 
-.stage-progress-text {
+.stage-track {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+
+.stage-rail {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  height: 32px;
-  padding: 0 14px;
-  margin-bottom: var(--space-4);
+  height: 34px;
+  padding: 0 16px;
   border-radius: var(--r-pill);
-  background-color: var(--accent-soft);
-  color: var(--accent);
-  font-size: 12.5px;
-}
-.stage-progress-text .loading-spinner {
-  width: 13px;
-  height: 13px;
-  border-width: 2px;
-  border-color: var(--accent-line);
-  border-top-color: var(--accent);
+  background-color: var(--surface-2);
+  box-shadow: var(--bevel);
   flex-shrink: 0;
 }
+
+/* 未着手は小さな点、完了はアクセント色の点、進行中は棒に伸びる */
+.stage-step {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background-color: var(--ink-3);
+  opacity: .55;
+  transition: width .45s cubic-bezier(.32, .72, 0, 1), background-color .3s ease,
+    opacity .3s ease;
+}
+.stage-step--done {
+  background-color: var(--accent);
+  opacity: 1;
+}
+.stage-step--active {
+  width: 64px;
+  height: 6px;
+  background-color: var(--accent-soft);
+  opacity: 1;
+  overflow: hidden;
+}
+
+/* 所要時間が事前に分からないため、満ち方は繰り返しで表す */
+.stage-step-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: var(--r-pill);
+  background-color: var(--accent);
+  animation: stage-fill 2.6s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+@keyframes stage-fill {
+  0%   { width: 0; opacity: 1; }
+  75%  { width: 100%; opacity: 1; }
+  100% { width: 100%; opacity: .25; }
+}
+
+.stage-track-text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.stage-track-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ---- 読み進みピル ---- */
+
+.scroll-progress {
+  position: fixed;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.scroll-progress-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 260px;
+  height: 40px;
+  padding: 0 16px 0 10px;
+  border: none;
+  border-radius: var(--r-pill);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  box-shadow: var(--bevel), var(--shadow-float);
+  transition: color .15s ease, background-color .15s ease;
+}
+.scroll-progress-pill:hover { color: var(--ink); background-color: var(--surface-hover); }
+
+/* 進捗リング。conic-gradient を中抜きして輪にする */
+.scroll-progress-ring {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(var(--accent) var(--ratio), var(--line) 0);
+}
+.scroll-progress-ring-hole {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background-color: var(--surface-2);
+}
+.scroll-progress-pill:hover .scroll-progress-ring-hole { background-color: var(--surface-hover); }
+
+.scroll-progress-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scroll-progress-menu {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: var(--space-2);
+  border-radius: var(--r-lg);
+  background-color: var(--surface);
+  box-shadow: var(--bevel), var(--shadow-float);
+  animation: scroll-progress-in .18s ease;
+}
+@keyframes scroll-progress-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+.scroll-progress-item {
+  flex-shrink: 0;  /* 項目が多いとき縮まずにスクロールさせる */
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color .12s ease, background-color .12s ease;
+}
+.scroll-progress-item:hover { color: var(--ink); background-color: var(--surface-hover); }
+.scroll-progress-item--current { color: var(--accent); background-color: var(--accent-soft); }
 
 /* ---- 議事録本文（Markdown） ---- */
 
@@ -927,4 +1065,7 @@ button { font-family: inherit; font-size: inherit; line-height: inherit; color: 
   .detail-actions { width: 100%; flex-wrap: wrap; }
   .detail-toolbar { flex-wrap: wrap; }
   .detail-toolbar .audio-player { flex-basis: 100%; }
+  .scroll-progress { right: var(--space-3); bottom: var(--space-3); }
+  .scroll-progress-pill { max-width: 180px; }
+  .scroll-progress-menu { width: min(260px, calc(100vw - 32px)); }
 }

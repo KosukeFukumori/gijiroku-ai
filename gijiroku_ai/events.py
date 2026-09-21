@@ -7,7 +7,8 @@
 イベントの種類（type フィールド）:
 - recordings_changed: 一覧に増減・状態変化があった（一覧の再読込を促す）
 - recording_updated:  特定録音の process_status が変わった
-- stage_progress:     処理中の大まかな段階を表す短いテキスト（都度上書き。
+- stage_progress:     処理中の大まかな段階を表す短いテキストと、段階の識別子
+                       step（transcribe / diarize / minutes）（都度上書き。
                        ローカル文字起こし・話者識別のように segment_added /
                        summary_progress が出るまで無反応に見える区間の
                        つなぎとして使う）

@@ -63,8 +63,19 @@ def _to_wav16k_mono(src: Path) -> Path:
     Path(out).unlink(missing_ok=True)  # mkstemp が作った空ファイルは ffmpeg が上書き
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-             "-ac", "1", "-ar", "16000", out],
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(src),
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                out,
+            ],
             check=True,
             capture_output=True,
         )
@@ -109,7 +120,7 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 def _run_worker(
     wav_path: Path,
-    on_stage: Callable[[str], None] | None,
+    on_stage: Callable[[str, str], None] | None,
     on_segment: Callable[[float, float, str], None] | None,
     should_cancel: Callable[[], bool] | None,
     diarize_only: bool = False,
@@ -162,13 +173,13 @@ def _run_worker(
                 break
             if not line.startswith(SENTINEL):
                 continue  # 想定外の標準出力（ダウンロード表示など）は無視
-            message = json.loads(line[len(SENTINEL):])
+            message = json.loads(line[len(SENTINEL) :])
             kind = message.get("type")
             if kind == "stage":
                 text = str(message["text"])
                 logger.info(text)
                 if on_stage is not None:
-                    on_stage(text)
+                    on_stage(text, str(message["step"]))
             elif kind == "segment" and on_segment is not None:
                 on_segment(
                     float(message["start"]), float(message["end"]), str(message["text"])
@@ -176,7 +187,9 @@ def _run_worker(
             elif kind == "segments":
                 segments = list(message["items"])
             elif kind == "turns":
-                turns = [(float(s), float(e), str(label)) for s, e, label in message["items"]]
+                turns = [
+                    (float(s), float(e), str(label)) for s, e, label in message["items"]
+                ]
             elif kind == "error":
                 error = str(message["message"])
     finally:
@@ -191,7 +204,9 @@ def _run_worker(
     return segments, turns
 
 
-def speaker_for(start: float, end: float, turns: list[tuple[float, float, str]]) -> str | None:
+def speaker_for(
+    start: float, end: float, turns: list[tuple[float, float, str]]
+) -> str | None:
     """発話区間に最も重なる話者ターンのラベルを返す（重なりが無ければ None）。"""
     best_label: str | None = None
     best_overlap = 0.0
@@ -220,7 +235,7 @@ def relabel_speakers(
 
 def transcribe(
     audio_path: Path,
-    on_stage: Callable[[str], None] | None = None,
+    on_stage: Callable[[str, str], None] | None = None,
     on_segment: Callable[[float, float, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> list[TranscriptSegment]:
@@ -228,7 +243,8 @@ def transcribe(
 
     話者識別が使えない環境（HF_TOKEN 無し等）では speaker=None のまま返す。
 
-    - on_stage:      処理段階が変わるたびに呼ばれる（SSE で表示する用途）
+    - on_stage:      処理段階が変わるたびに (テキスト, 段階の識別子) で
+                     呼ばれる（SSE で表示する用途）
     - on_segment:    文字起こしが1区間確定するたびに (start, end, text) で
                      呼ばれる。話者ラベルは全区間の確定後に付くため、ここでは
                      まだ分からない
@@ -248,7 +264,9 @@ def transcribe(
             start_sec=float(s["start"]),
             end_sec=float(s["end"]),
             text=str(s["text"]),
-            speaker=speaker_for(float(s["start"]), float(s["end"]), turns) if turns else None,
+            speaker=speaker_for(float(s["start"]), float(s["end"]), turns)
+            if turns
+            else None,
         )
         for s in whisper_segments
     ]
@@ -257,7 +275,7 @@ def transcribe(
 
 def diarize(
     audio_path: Path,
-    on_stage: Callable[[str], None] | None = None,
+    on_stage: Callable[[str, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> list[tuple[float, float, str]]:
     """既存の文字起こし結果はそのままに、話者識別だけをやり直して話者区間を返す。
@@ -266,7 +284,9 @@ def diarize(
     """
     wav_path = _to_wav16k_mono(audio_path)
     try:
-        _, turns = _run_worker(wav_path, on_stage, None, should_cancel, diarize_only=True)
+        _, turns = _run_worker(
+            wav_path, on_stage, None, should_cancel, diarize_only=True
+        )
     finally:
         wav_path.unlink(missing_ok=True)
     return turns
